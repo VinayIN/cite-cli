@@ -8,12 +8,11 @@ CLI tool for scaffolding, validating, building, and deploying news content to Su
 
 (MacOS/Linux only)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/VinayIN/cite-cli/release/latest/cite-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha/cite-cli-installer.sh | sh
 ```
 (Windows only)
 ```powershell
-Invoke-WebRequest -Uri https://raw.githubusercontent.com/VinayIN/cite-cli/release/latest/cite-cli-installer.ps1 -OutFile cite-cli-installer.ps1
-.\cite-cli-installer.ps1
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha/cite-cli-installer.ps1 | iex"
 ```
 
 ### From source
