@@ -73,4 +73,12 @@ pub enum Command {
         #[arg(short, long)]
         path: Option<String>,
     },
+    /// Self-update to the latest GitHub release
+    Upgrade,
+    /// Remove cite-cli binary and clean up shell configuration
+    Uninstall {
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+    },
 }

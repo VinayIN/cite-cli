@@ -6,19 +6,15 @@ CLI tool for scaffolding, validating, building, and deploying news content to Su
 
 ### Quick install
 
+(MacOS/Linux only)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/VinayIN/cite-cli/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/VinayIN/cite-cli/release/latest/cite-cli-installer.sh | sh
 ```
-
-> **Note:** To install to `/usr/local/bin` (instead of `~/.local/bin`), run as root
-
-The script will:
-1. Detect your OS and architecture
-2. Download a pre-built binary from GitHub Releases (if available), or build from source via Cargo
-3. Install to `~/.local/bin` (or `/usr/local/bin` if run as root)
-4. Add the install directory to your `PATH` in your shell config (`.bashrc`/`.zshrc`)
-
-> **Note:** Building from source requires [Rust](https://rustup.rs). If no pre-built binary exists for your platform and Rust is not installed, the script will prompt you to install it.
+(Windows only)
+```powershell
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/VinayIN/cite-cli/release/latest/cite-cli-installer.ps1 -OutFile cite-cli-installer.ps1
+.\cite-cli-installer.ps1
+```
 
 ### From source
 

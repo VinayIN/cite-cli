@@ -8,6 +8,8 @@ mod metadata;
 mod project;
 mod scaffold;
 mod slug;
+mod uninstall;
+mod upgrade;
 mod validation;
 
 use clap::Parser;
@@ -149,6 +151,8 @@ async fn run(cli: &Cli) -> Result<(), error::CiteError> {
             eprintln!("{}", "✔ Cleaned build artifacts".green().bold());
             Ok(())
         }
+        Command::Upgrade => upgrade::upgrade().await,
+        Command::Uninstall { force } => uninstall::uninstall(*force),
     }
 }
 
