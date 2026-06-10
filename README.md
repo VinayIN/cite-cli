@@ -5,10 +5,10 @@ CLI tool for scaffolding, validating, building, and deploying news content to Su
 ## Usage
 
 ```bash
-cargo run -- init my-project
-cargo run -- validate
-cargo run -- build
-cargo run -- status
+cargo run init my-project
+cargo run validate --path my-project
+cargo run build --path my-project
+cargo run status --path my-project
 ```
 
 ## Tests
@@ -21,6 +21,11 @@ cargo test
 ```bash
 cargo build --release
 ./target/release/cite-cli --help
+```
+and then can use this:
+```
+./target/release/cite-cli init my-project
+./target/release/cite-cli validate
 ```
 
 ## Commands
