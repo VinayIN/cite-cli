@@ -2,6 +2,33 @@
 
 CLI tool for scaffolding, validating, building, and deploying news content to Supabase.
 
+## Installation
+
+### Quick install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/VinayIN/cite-cli/main/install.sh | sh
+```
+
+> **Note:** To install to `/usr/local/bin` (instead of `~/.local/bin`), run as root
+
+The script will:
+1. Detect your OS and architecture
+2. Download a pre-built binary from GitHub Releases (if available), or build from source via Cargo
+3. Install to `~/.local/bin` (or `/usr/local/bin` if run as root)
+4. Add the install directory to your `PATH` in your shell config (`.bashrc`/`.zshrc`)
+
+> **Note:** Building from source requires [Rust](https://rustup.rs). If no pre-built binary exists for your platform and Rust is not installed, the script will prompt you to install it.
+
+### From source
+
+```bash
+git clone https://github.com/VinayIN/cite-cli.git
+cd cite-cli
+cargo build --release
+./target/release/cite-cli --help
+```
+
 ## Usage
 
 ```bash
