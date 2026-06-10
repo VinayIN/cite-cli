@@ -2,7 +2,7 @@
 name = "cite-cli"
 authors = ["Binay Pradhan"]
 readme = "README.md"
-version = "0.1.0"
+version = "0.1.0-alpha"
 edition = "2024"
 license-file = "LICENSE"
 repository = "https://github.com/VinayIN/cite-cli"
