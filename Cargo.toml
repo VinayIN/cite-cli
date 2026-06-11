@@ -4,7 +4,7 @@ authors = ["Binay Pradhan"]
 version = "0.1.0-alpha"
 edition = "2024"
 readme = "README.md"
-changelog = "CHANGELOG.md"
+
 license-file = "LICENSE"
 repository = "https://github.com/VinayIN/cite-cli"
 

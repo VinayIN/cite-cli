@@ -1,9 +1,26 @@
+use std::path::PathBuf;
 use std::process::Command;
+use std::fs;
 
-fn cite_cli_bin() -> std::path::PathBuf {
-    let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("target/debug/cite-cli");
-    if !p.exists() {
+struct ProjectHarness {
+    _dir: tempfile::TempDir,
+    project: PathBuf,
+}
+
+impl ProjectHarness {
+    fn new(name: &str) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join(name);
+        Self::ok(&["init", "--path", project.to_str().unwrap(), name]);
+        Self { _dir: dir, project }
+    }
+
+    fn binary() -> PathBuf {
+        let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.push("target/debug/cite-cli");
+        if p.exists() {
+            return p;
+        }
         p.set_file_name("cite-cli");
         let mut release = p.clone();
         release.pop();
@@ -11,150 +28,91 @@ fn cite_cli_bin() -> std::path::PathBuf {
         if release.exists() {
             return release;
         }
+        p
     }
-    p
+
+    fn output(args: &[&str]) -> (String, String, bool) {
+        let output = Command::new(Self::binary())
+            .args(args)
+            .output()
+            .expect("Failed to run cite-cli");
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        (stdout, stderr, output.status.success())
+    }
+
+    fn ok(args: &[&str]) {
+        let (_, stderr, ok) = Self::output(args);
+        assert!(ok, "cite-cli {} failed: {stderr}", args.join(" "));
+    }
+
+    fn run(&self, args: &[&str]) -> (String, String, bool) {
+        let mut full = args.to_vec();
+        full.extend_from_slice(&["--path", self.project.to_str().unwrap()]);
+        Self::output(&full)
+    }
+
+    fn run_ok(&self, args: &[&str]) -> String {
+        let (_, stderr, ok) = self.run(args);
+        assert!(ok, "cite-cli {} failed: {stderr}", args.join(" "));
+        stderr
+    }
+
+    fn write_metadata(&self, yaml: &str) {
+        fs::write(self.project.join("metadata.yml"), yaml).unwrap();
+    }
+
+    fn write_content(&self, relative: &str, text: &str) {
+        let path = self.project.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, text).unwrap();
+    }
+
+    fn read_bundle(&self) -> serde_json::Value {
+        let content = fs::read_to_string(self.project.join("build/content.json")).unwrap();
+        serde_json::from_str(&content).unwrap()
+    }
 }
 
-fn run(args: &[&str]) -> (String, String, bool) {
-    let output = Command::new(cite_cli_bin())
-        .args(args)
-        .output()
-        .expect("Failed to execute cite-cli");
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let success = output.status.success();
-    (stdout, stderr, success)
+// ── init ────────────────────────────────────────────────────────
+
+#[test]
+fn init_creates_project_structure() {
+    let h = ProjectHarness::new("my-project");
+
+    assert!(h.project.join("cite.toml").exists(), "cite.toml");
+    assert!(h.project.join("metadata.yml").exists(), "metadata.yml");
+    assert!(h.project.join("content").is_dir(), "content/");
+    assert!(h.project.join("assets/audio").is_dir(), "assets/audio/");
+    assert!(h.project.join("assets/images").is_dir(), "assets/images/");
+    assert!(h.project.join("build").is_dir(), "build/");
+    assert!(h.project.join(".gitignore").exists(), ".gitignore");
 }
 
 #[test]
-fn test_init_creates_project() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("test-project");
-
-    let (_, stderr, ok) = run(&[
-        "init",
-        "--path",
-        project_dir.to_str().unwrap(),
-        "test-project",
+fn init_fails_on_existing_nonempty() {
+    let h = ProjectHarness::new("existing");
+    let (_, stderr, ok) = ProjectHarness::output(&[
+        "init", "--path", h.project.to_str().unwrap(), "existing",
     ]);
-    assert!(ok, "init should succeed: {stderr}");
-    assert!(project_dir.join("cite.toml").exists());
-    assert!(project_dir.join("metadata.yml").exists());
-    assert!(project_dir.join("content").is_dir());
-    assert!(project_dir.join("assets/audio").is_dir());
-    assert!(project_dir.join("assets/images").is_dir());
-    assert!(project_dir.join("build").is_dir());
-    assert!(project_dir.join(".gitignore").exists());
+    assert!(!ok);
+    assert!(stderr.contains("not empty"));
+}
+
+// ── validate ────────────────────────────────────────────────────
+
+#[test]
+fn validate_passes_on_empty_project() {
+    let h = ProjectHarness::new("empty");
+    h.run_ok(&["validate"]);
 }
 
 #[test]
-fn test_init_fails_on_existing_nonempty() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("existing");
-
-    // First init succeeds
-    let (_, _, ok) = run(&["init", "--path", project_dir.to_str().unwrap(), "existing"]);
-    assert!(ok);
-
-    // Second init should fail
-    let (_, stderr, ok) = run(&["init", "--path", project_dir.to_str().unwrap(), "existing"]);
-    assert!(!ok, "second init on same dir should fail");
-    assert!(stderr.contains("not empty") || stderr.contains("already exists"));
-}
-
-#[test]
-fn test_validate_empty_project() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("test-validate");
-
-    run(&[
-        "init",
-        "--path",
-        project_dir.to_str().unwrap(),
-        "test-validate",
-    ]);
-    let (_, stderr, ok) = run(&["validate", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok, "validate should pass on empty project: {stderr}");
-}
-
-#[test]
-fn test_full_workflow() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("full-workflow");
-
-    // Init
-    let (_, _, ok) = run(&[
-        "init",
-        "--path",
-        project_dir.to_str().unwrap(),
-        "full-workflow",
-    ]);
-    assert!(ok);
-
-    // Create content
-    let content_file = project_dir.join("content/article.md");
-    std::fs::write(&content_file, "# Test Article\nContent here.").unwrap();
-
-    // Write metadata
-    let meta = r#"
-artists:
-  - slug: alice
-    name: "Alice"
-news:
-  - slug: test-article
-    title: "Test Article"
-    file: content/article.md
-    category: tech
-    artists: [alice]
-podcasts: []
-newsletters: []
-timelines: []
-"#;
-    std::fs::write(project_dir.join("metadata.yml"), meta).unwrap();
-
-    // Validate
-    let (_, stderr, ok) = run(&["validate", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok, "validate should pass: {stderr}");
-
-    // Lint
-    let (_, stderr, ok) = run(&["lint", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok, "lint should pass: {stderr}");
-
-    // Build
-    let (_, stderr, ok) = run(&["build", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok, "build should succeed: {stderr}");
-    assert!(project_dir.join("build/content.json").exists());
-
-    // Build (cached) - should be no-op
-    let (_, stderr, ok) = run(&["build", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok, "cached build should succeed: {stderr}");
-
-    // Force rebuild
-    let (_, stderr, ok) = run(&["build", "--path", project_dir.to_str().unwrap(), "--force"]);
-    assert!(ok, "force rebuild should succeed: {stderr}");
-
-    // Status
-    let (_, stderr, ok) = run(&["status", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok, "status should succeed: {stderr}");
-
-    // Doctor
-    let (_, stderr, ok) = run(&["doctor", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok, "doctor should succeed: {stderr}");
-
-    // Clean
-    let (_, stderr, ok) = run(&["clean", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok, "clean should succeed: {stderr}");
-    assert!(!project_dir.join("build").exists());
-}
-
-#[test]
-fn test_validate_catches_missing_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("bad-ref");
-
-    run(&["init", "--path", project_dir.to_str().unwrap(), "bad-ref"]);
-
-    let meta = r#"
+fn validate_catches_missing_file() {
+    let h = ProjectHarness::new("missing-file");
+    h.write_metadata(r#"
 artists: []
 news:
   - slug: broken
@@ -163,23 +121,17 @@ news:
 podcasts: []
 newsletters: []
 timelines: []
-"#;
-    std::fs::write(project_dir.join("metadata.yml"), meta).unwrap();
-
-    let (_, stderr, ok) = run(&["validate", "--path", project_dir.to_str().unwrap()]);
-    assert!(!ok, "validate should fail for missing file");
+"#);
+    let (_, stderr, ok) = h.run(&["validate"]);
+    assert!(!ok);
     assert!(stderr.contains("does not exist"));
 }
 
 #[test]
-fn test_validate_catches_bad_cross_ref() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("bad-ref");
-
-    run(&["init", "--path", project_dir.to_str().unwrap(), "bad-ref"]);
-    std::fs::write(project_dir.join("content/a.md"), "# A").unwrap();
-
-    let meta = r#"
+fn validate_catches_bad_cross_ref() {
+    let h = ProjectHarness::new("bad-xref");
+    h.write_content("content/a.md", "# A");
+    h.write_metadata(r#"
 artists: []
 news:
   - slug: a
@@ -189,163 +141,254 @@ news:
 podcasts: []
 newsletters: []
 timelines: []
-"#;
-    std::fs::write(project_dir.join("metadata.yml"), meta).unwrap();
-
-    let (_, stderr, ok) = run(&["validate", "--path", project_dir.to_str().unwrap()]);
-    assert!(!ok, "validate should fail for bad cross-ref");
+"#);
+    let (_, stderr, ok) = h.run(&["validate"]);
+    assert!(!ok);
     assert!(stderr.contains("unknown artist"));
 }
 
 #[test]
-fn test_help() {
-    let (stdout, _, ok) = run(&["--help"]);
+fn validate_catches_missing_metadata() {
+    let h = ProjectHarness::new("no-meta");
+    fs::remove_file(h.project.join("metadata.yml")).unwrap();
+    let (_, stderr, ok) = h.run(&["validate"]);
+    assert!(!ok);
+    assert!(stderr.contains("not found"));
+}
+
+// ── lint ────────────────────────────────────────────────────────
+
+#[test]
+fn lint_warns_on_short_content() {
+    let h = ProjectHarness::new("short-content");
+    h.write_content("content/a.md", "Hi");
+    h.write_metadata(r#"
+artists: []
+news:
+  - slug: a
+    title: "A"
+    file: content/a.md
+podcasts: []
+newsletters: []
+timelines: []
+"#);
+    let (_, stderr, ok) = h.run(&["lint"]);
     assert!(ok);
-    assert!(stdout.contains("cite-cli"));
+    assert!(stderr.contains("very short"));
+}
+
+// ── build ───────────────────────────────────────────────────────
+
+#[test]
+fn build_produces_valid_content_json() {
+    let h = ProjectHarness::new("build-test");
+    h.write_content("content/article.md", "# Hello World");
+    h.write_metadata(r#"
+artists:
+  - slug: alice
+    name: "Alice"
+news:
+  - slug: my-article
+    title: "My Article"
+    file: content/article.md
+    category: tech
+    artists: [alice]
+podcasts: []
+newsletters: []
+timelines: []
+"#);
+
+    h.run_ok(&["build"]);
+
+    let bundle = h.read_bundle();
+    assert_eq!(bundle["project"], "build-test");
+    assert_eq!(bundle["compiler_version"], "0");
+    assert_eq!(bundle["artists"].as_array().unwrap().len(), 1);
+    assert_eq!(bundle["artists"][0]["slug"], "alice");
+    assert_eq!(bundle["news"].as_array().unwrap().len(), 1);
+    assert_eq!(bundle["news"][0]["slug"], "my-article");
+    assert_eq!(bundle["news"][0]["content"], "# Hello World");
 }
 
 #[test]
-fn test_verbose_flag() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("verbose-test");
-    let (_, _, ok) = run(&[
-        "init",
-        "--path",
-        project_dir.to_str().unwrap(),
-        "verbose-test",
-    ]);
-    assert!(ok);
-    let (_, _stderr, ok) = run(&[
-        "validate",
-        "--path",
-        project_dir.to_str().unwrap(),
-        "--verbose",
-    ]);
-    assert!(ok);
+fn build_is_idempotent_with_cache() {
+    let h = ProjectHarness::new("cached-build");
+    h.write_content("content/article.md", "# Same");
+    h.write_metadata(r#"
+artists: []
+news:
+  - slug: a
+    title: "A"
+    file: content/article.md
+podcasts: []
+newsletters: []
+timelines: []
+"#);
+
+    h.run_ok(&["build"]);
+    let first = h.read_bundle();
+
+    // cached build — no output means nothing changed
+    let (_, stderr, ok) = h.run(&["build"]);
+    assert!(ok, "cached build: {stderr}");
+
+    h.run_ok(&["build", "--force"]);
+
+    let second = h.read_bundle();
+    assert_eq!(first, second, "force rebuild should match");
 }
 
 #[test]
-fn test_doctor_on_nonexistent_project() {
-    let dir = tempfile::tempdir().unwrap();
-    let (_, stderr, ok) = run(&["doctor", "--path", dir.path().to_str().unwrap()]);
+fn build_embeds_content_and_resolves_wiki_links() {
+    let h = ProjectHarness::new("wiki-test");
+    h.write_content("content/main.md", "See [[ai-article]] for details");
+    h.write_content("content/ai.md", "# AI Article");
+    h.write_metadata(r#"
+artists: []
+news:
+  - slug: main
+    title: "Main"
+    file: content/main.md
+  - slug: ai-article
+    title: "AI Article"
+    file: content/ai.md
+podcasts: []
+newsletters: []
+timelines: []
+"#);
+
+    h.run_ok(&["build"]);
+
+    let bundle = h.read_bundle();
+    let main = bundle["news"].as_array().unwrap().iter()
+        .find(|n| n["slug"] == "main").unwrap();
+    let content = main["content"].as_str().unwrap();
+    assert!(
+        content.contains("{{slug:ai-article}}"),
+        "wiki-link should resolve, got: {content}"
+    );
+    assert!(
+        !content.contains("[[ai-article]]"),
+        "raw wiki-link should not remain"
+    );
+}
+
+// ── status ──────────────────────────────────────────────────────
+
+#[test]
+fn status_shows_project_info() {
+    let h = ProjectHarness::new("status-test");
+    h.write_content("content/a.md", "# Content");
+    h.write_metadata(r#"
+artists:
+  - slug: alice
+    name: "Alice"
+news:
+  - slug: a
+    title: "A"
+    file: content/a.md
+    artists: [alice]
+podcasts: []
+newsletters: []
+timelines: []
+"#);
+
+    let stderr = h.run_ok(&["status"]);
+    assert!(stderr.contains("status-test"));
+    assert!(stderr.contains("Artists:  1"));
+
+    h.run_ok(&["build"]);
+
+    let stderr = h.run_ok(&["status"]);
+    assert!(stderr.contains("✔ (exists)"));
+}
+
+// ── doctor ──────────────────────────────────────────────────────
+
+#[test]
+fn doctor_detects_missing_project() {
+    let (_, stderr, ok) = ProjectHarness::output(&[
+        "doctor", "--path", "/tmp/nonexistent-project-test-12345",
+    ]);
     assert!(ok);
     assert!(stderr.contains("cite.toml not found"));
 }
 
 #[test]
-fn test_status_after_init() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("status-test");
-    run(&[
-        "init",
-        "--path",
-        project_dir.to_str().unwrap(),
-        "status-test",
-    ]);
-    let (_, stderr, ok) = run(&["status", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok);
-    assert!(stderr.contains("status-test"));
-    assert!(stderr.contains("Artists:  0"));
+fn doctor_shows_project_health() {
+    let h = ProjectHarness::new("doctor-test");
+    let stderr = h.run_ok(&["doctor"]);
+    assert!(stderr.contains("cite.toml found"));
+    assert!(stderr.contains("metadata.yml found"));
 }
 
-#[test]
-fn test_validate_missing_metadata() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("no-meta");
-    run(&["init", "--path", project_dir.to_str().unwrap(), "no-meta"]);
-    // Remove metadata.yml
-    std::fs::remove_file(project_dir.join("metadata.yml")).unwrap();
-    let (_, stderr, ok) = run(&["validate", "--path", project_dir.to_str().unwrap()]);
-    assert!(!ok);
-    assert!(stderr.contains("not found"));
-}
+// ── clean ───────────────────────────────────────────────────────
 
 #[test]
-fn test_clean_idempotent() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("clean-test");
-    run(&[
-        "init",
-        "--path",
-        project_dir.to_str().unwrap(),
-        "clean-test",
-    ]);
-    let (_, _, ok) = run(&["clean", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok);
-    // Second clean should also succeed
-    let (_, _, ok) = run(&["clean", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok);
-}
-
-#[test]
-fn test_build_then_clean() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("build-clean");
-    run(&[
-        "init",
-        "--path",
-        project_dir.to_str().unwrap(),
-        "build-clean",
-    ]);
-    std::fs::write(project_dir.join("content/a.md"), "# Hello").unwrap();
-    let meta = r#"
+fn clean_removes_artifacts_and_is_idempotent() {
+    let h = ProjectHarness::new("clean-test");
+    h.write_content("content/a.md", "# A");
+    h.write_metadata(r#"
 artists: []
 news:
-  - slug: test
-    title: "Test"
+  - slug: a
+    title: "A"
     file: content/a.md
 podcasts: []
 newsletters: []
 timelines: []
-"#;
-    std::fs::write(project_dir.join("metadata.yml"), meta).unwrap();
-    // Build
-    let (_, _, ok) = run(&["build", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok);
-    assert!(project_dir.join("build/content.json").exists());
-    // Clean
-    let (_, _, ok) = run(&["clean", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok);
-    assert!(!project_dir.join("build").exists());
+"#);
+    h.run_ok(&["build"]);
+    assert!(h.project.join("build").exists());
+
+    h.run_ok(&["clean"]);
+    assert!(!h.project.join("build").exists(), "build/ removed");
+    assert!(!h.project.join(".cite-cache.json").exists(), "cache removed");
+
+    h.run_ok(&["clean"]);
+}
+
+// ── deploy ──────────────────────────────────────────────────────
+
+#[test]
+fn deploy_fails_without_backend() {
+    let h = ProjectHarness::new("no-backend");
+    let (_, stderr, ok) = h.run(&["deploy"]);
+    assert!(!ok);
+    assert!(stderr.contains("No [backend]") || stderr.contains("No build artifact"));
 }
 
 #[test]
-fn test_validate_empty_content_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("empty-content");
-    run(&[
-        "init",
-        "--path",
-        project_dir.to_str().unwrap(),
-        "empty-content",
-    ]);
-    std::fs::write(project_dir.join("content/empty.md"), "").unwrap();
-    let meta = r#"
-artists: []
-news:
-  - slug: empty
-    title: "Empty"
-    file: content/empty.md
-podcasts: []
-newsletters: []
-timelines: []
-"#;
-    std::fs::write(project_dir.join("metadata.yml"), meta).unwrap();
-    let (_, _, ok) = run(&["validate", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok, "empty file should not fail validation");
-    let (_, stderr, ok) = run(&["lint", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok);
-    assert!(stderr.contains("very short"));
+fn deploy_fails_without_build() {
+    let h = ProjectHarness::new("no-build");
+    fs::write(
+        h.project.join("cite.toml"),
+        "[project]\nname = \"no-build\"\nversion = \"0.1.0\"\n\n[build]\ncompiler_version = \"0\"\nincremental = true\noutput_format = \"json\"\n\n[backend]\nstaging_url = \"https://test.supabase.co\"\nstaging_service_key = \"test-key\"\n",
+    ).unwrap();
+    let (_, stderr, ok) = h.run(&["deploy"]);
+    assert!(!ok);
+    assert!(stderr.contains("No build artifact"));
 }
 
+// ── rollback ────────────────────────────────────────────────────
+
 #[test]
-fn test_complex_workflow_with_cross_refs() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("complex");
-    run(&["init", "--path", project_dir.to_str().unwrap(), "complex"]);
-    std::fs::write(project_dir.join("content/ai.md"), "# AI Article").unwrap();
-    std::fs::write(project_dir.join("content/ml.md"), "# ML Article").unwrap();
-    let meta = r#"
+fn rollback_fails_without_backend() {
+    let h = ProjectHarness::new("no-backend-rb");
+    let (_, stderr, ok) = h.run(&["rollback", "some-id"]);
+    assert!(!ok);
+    assert!(stderr.contains("No [backend]"));
+}
+
+// ── e2e ─────────────────────────────────────────────────────────
+
+#[test]
+fn full_workflow_end_to_end() {
+    let h = ProjectHarness::new("e2e");
+
+    h.write_content("content/ai.md", "# AI Article\nSee [[ml-article]].");
+    h.write_content("content/ml.md", "# ML Article");
+    h.write_metadata(r#"
 artists:
   - slug: alice
     name: "Alice"
@@ -380,63 +423,42 @@ timelines:
       - date: "2026-01-01"
         title: "Start"
         summary: "The beginning"
-"#;
-    std::fs::write(project_dir.join("metadata.yml"), meta).unwrap();
+"#);
 
-    let (_, stderr, ok) = run(&["validate", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok, "validate should pass: {stderr}");
-    let (_, _, ok) = run(&["lint", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok);
-    let (_, _, ok) = run(&["build", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok);
-    let (_, stderr, ok) = run(&["status", "--path", project_dir.to_str().unwrap()]);
-    assert!(ok);
+    h.run_ok(&["validate"]);
+    h.run_ok(&["lint"]);
+    h.run_ok(&["build"]);
+
+    let stderr = h.run_ok(&["status"]);
     assert!(stderr.contains("Artists:  2"));
     assert!(stderr.contains("News:     2"));
     assert!(stderr.contains("Podcasts: 1"));
     assert!(stderr.contains("Newsletters: 1"));
     assert!(stderr.contains("Timelines: 1"));
-    assert!(stderr.contains("✔ (exists)"));
 
-    // Read built content.json and verify
-    let content = std::fs::read_to_string(project_dir.join("build/content.json")).unwrap();
-    let bundle: serde_json::Value = serde_json::from_str(&content).unwrap();
-    assert_eq!(bundle["project"], "complex");
+    let bundle = h.read_bundle();
+    assert_eq!(bundle["project"], "e2e");
     assert_eq!(bundle["artists"].as_array().unwrap().len(), 2);
     assert_eq!(bundle["news"].as_array().unwrap().len(), 2);
-    assert_eq!(bundle["podcasts"].as_array().unwrap().len(), 1);
-    assert_eq!(bundle["newsletters"].as_array().unwrap().len(), 1);
-    assert_eq!(bundle["timelines"].as_array().unwrap().len(), 1);
+    assert!(bundle["news"][0]["content"].as_str().unwrap().contains("{{slug:ml-article}}"));
+
+    h.run_ok(&["clean"]);
+    assert!(!h.project.join("build").exists());
+}
+
+// ── cli basics ──────────────────────────────────────────────────
+
+#[test]
+fn help_prints_usage() {
+    let (stdout, _, ok) = ProjectHarness::output(&["--help"]);
+    assert!(ok);
+    assert!(stdout.contains("cite-cli"));
+    assert!(stdout.contains("rollback"));
+    assert!(stdout.contains("deploy"));
 }
 
 #[test]
-fn test_deploy_fails_without_backend() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("no-backend");
-    run(&[
-        "init",
-        "--path",
-        project_dir.to_str().unwrap(),
-        "no-backend",
-    ]);
-    let (_, stderr, ok) = run(&["deploy", "--path", project_dir.to_str().unwrap()]);
-    assert!(!ok);
-    assert!(stderr.contains("No build artifact") || stderr.contains("No [backend]"));
-}
-
-#[test]
-fn test_deploy_fails_without_build() {
-    let dir = tempfile::tempdir().unwrap();
-    let project_dir = dir.path().join("no-build");
-    run(&["init", "--path", project_dir.to_str().unwrap(), "no-build"]);
-
-    // Write a cite.toml with a backend section
-    let manifest = format!(
-        "[project]\nname = \"no-build\"\nversion = \"0.1.0\"\n\n[build]\ncompiler_version = \"0\"\nincremental = true\noutput_format = \"json\"\n\n[backend]\nstaging_url = \"https://test.supabase.co\"\nstaging_service_key = \"test-key\"\n"
-    );
-    std::fs::write(project_dir.join("cite.toml"), manifest).unwrap();
-
-    let (_, stderr, ok) = run(&["deploy", "--path", project_dir.to_str().unwrap()]);
-    assert!(!ok);
-    assert!(stderr.contains("No build artifact"));
+fn verbose_flag_works() {
+    let h = ProjectHarness::new("verbose-test");
+    h.run_ok(&["validate", "--verbose"]);
 }

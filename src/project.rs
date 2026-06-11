@@ -92,3 +92,47 @@ impl Metadata {
         slugs
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::Manifest;
+    use crate::metadata::{News, Podcast, Newsletter};
+    use crate::slug::Slug;
+    use std::path::PathBuf;
+
+    fn slug(s: &str) -> Slug {
+        Slug::new(s).unwrap()
+    }
+
+    #[test]
+    fn test_content_files_collects_all_references() {
+        let ctx = ProjectContext {
+            root: PathBuf::from("/root"),
+            manifest: Manifest::default_template("test"),
+            metadata: Metadata {
+                news: vec![News {
+                    slug: slug("a"), title: "A".into(), file: "content/a.md".into(),
+                    citation: Some("content/a.bib".into()), category: None,
+                    artists: vec![], podcasts: vec![], timelines: vec![], content: None,
+                }],
+                podcasts: vec![Podcast {
+                    slug: slug("p"), title: "P".into(), file: "assets/audio/p.mp3".into(),
+                    duration_seconds: None,
+                }],
+                newsletters: vec![Newsletter {
+                    slug: slug("n"), title: "N".into(), issue_number: None,
+                    published_date: None, included_news: vec![], file: Some("content/n.md".into()),
+                }],
+                ..Default::default()
+            },
+        };
+
+        let files = ctx.content_files();
+        assert_eq!(files.len(), 4);
+        assert!(files.contains(&PathBuf::from("/root/content/a.md")));
+        assert!(files.contains(&PathBuf::from("/root/content/a.bib")));
+        assert!(files.contains(&PathBuf::from("/root/assets/audio/p.mp3")));
+        assert!(files.contains(&PathBuf::from("/root/content/n.md")));
+    }
+}

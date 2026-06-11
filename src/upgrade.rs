@@ -46,8 +46,7 @@ pub async fn upgrade() -> Result<(), CiteError> {
     if !is_newer(latest, current) {
         eprintln!(
             "{}",
-            format!("ℹ Local version v{current} is newer than remote v{latest}")
-                .cyan()
+            format!("ℹ Local version v{current} is newer than remote v{latest}").cyan()
         );
         return Ok(());
     }
@@ -60,9 +59,8 @@ pub async fn upgrade() -> Result<(), CiteError> {
     );
 
     let target = target_triple();
-    let download_url = format!(
-        "https://github.com/{REPO}/releases/download/v{latest}/{BIN_NAME}-{target}"
-    );
+    let download_url =
+        format!("https://github.com/{REPO}/releases/download/v{latest}/{BIN_NAME}-{target}");
 
     eprintln!(
         "{}",
@@ -100,18 +98,13 @@ pub async fn upgrade() -> Result<(), CiteError> {
 }
 
 fn target_triple() -> String {
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        other => other,
-    };
     let os = match std::env::consts::OS {
         "linux" => "unknown-linux-gnu",
         "macos" => "apple-darwin",
         "windows" => "pc-windows-msvc",
         other => other,
     };
-    format!("{arch}-{os}")
+    format!("{}-{os}", std::env::consts::ARCH)
 }
 
 fn is_newer(a: &str, b: &str) -> bool {
@@ -151,6 +144,9 @@ mod tests {
     #[test]
     fn test_target_triple_format() {
         let triple = target_triple();
-        assert!(triple.contains('-'), "target triple should contain a hyphen");
+        assert!(
+            triple.contains('-'),
+            "target triple should contain a hyphen"
+        );
     }
 }

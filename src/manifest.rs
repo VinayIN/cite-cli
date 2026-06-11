@@ -94,7 +94,7 @@ fn default_audio_formats() -> Vec<String> {
     vec!["mp3".into(), "wav".into(), "m4a".into()]
 }
 fn default_image_formats() -> Vec<String> {
-    vec!["jpg".into(), "png".into(), "webp".into()]
+    vec!["jpg".into(), "png".into()]
 }
 
 impl Default for AssetsConfig {
@@ -139,5 +139,54 @@ impl Manifest {
             assets: AssetsConfig::default(),
             validation: ValidationConfig::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_template() {
+        let m = Manifest::default_template("my-project");
+        assert_eq!(m.project.name, "my-project");
+        assert_eq!(m.project.version, "0.1.0");
+        assert_eq!(m.project.default_language, "en");
+        assert_eq!(m.project.metadata_file, "metadata.yml");
+        assert_eq!(m.build.compiler_version, "0");
+        assert!(m.build.incremental);
+        assert!(m.backend.is_none());
+        assert!(m.validation.strict);
+    }
+
+    #[test]
+    fn test_deserialize_full() {
+        let toml_str = r#"
+[project]
+name = "test"
+version = "1.0.0"
+
+[build]
+compiler_version = "1"
+incremental = false
+
+[backend]
+staging_url = "https://example.com"
+
+[compiler]
+enabled_extensions = ["tables"]
+
+[assets]
+audio_formats = ["mp3"]
+image_formats = ["jpg"]
+"#;
+        let m: Manifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(m.project.name, "test");
+        assert_eq!(m.project.version, "1.0.0");
+        assert_eq!(m.build.compiler_version, "1");
+        assert!(!m.build.incremental);
+        assert!(m.backend.is_some());
+        assert_eq!(m.backend.as_ref().unwrap().staging_url, "https://example.com");
+        assert_eq!(m.assets.audio_formats, vec!["mp3"]);
     }
 }

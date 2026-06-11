@@ -2,6 +2,7 @@ use crate::cache::{self, BuildCache};
 use crate::error::{CiteError, ValidationReport};
 use crate::metadata::ContentBundle;
 use crate::project::ProjectContext;
+use std::collections::HashSet;
 use tracing::instrument;
 
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name, force))]
@@ -9,10 +10,8 @@ pub async fn build(ctx: &ProjectContext, force: bool) -> Result<ValidationReport
     let cache_path = ctx.cache_path();
     let content_files = ctx.content_files();
 
-    // 1. Compute current file hashes
     let current_hashes = cache::hash_files(&content_files).await?;
 
-    // 2. Determine changed files
     let changed = if force {
         ctx.metadata
             .news
@@ -20,14 +19,13 @@ pub async fn build(ctx: &ProjectContext, force: bool) -> Result<ValidationReport
             .map(|n| n.file.clone())
             .collect::<Vec<_>>()
     } else {
-        let cache = BuildCache::load_or_default(&cache_path)?;
+        let cache = BuildCache::load_or_default(&cache_path).await?;
         if cache.compiler_version != ctx.manifest.build.compiler_version {
-            // Full rebuild on version mismatch
             ctx.metadata.news.iter().map(|n| n.file.clone()).collect()
         } else {
             let changed_hashes = cache.changed_since(&current_hashes);
             if changed_hashes.is_empty() {
-                return Ok(ValidationReport::new()); // No changes
+                return Ok(ValidationReport::new());
             }
             changed_hashes
         }
@@ -37,40 +35,16 @@ pub async fn build(ctx: &ProjectContext, force: bool) -> Result<ValidationReport
         return Ok(ValidationReport::new());
     }
 
-    // 3. Build the content bundle
-    let bundle = ContentBundle {
-        compiler_version: ctx.manifest.build.compiler_version.clone(),
-        project: ctx.manifest.project.name.clone(),
-        artists: ctx.metadata.artists.clone(),
-        news: ctx.metadata.news.clone(),
-        podcasts: ctx.metadata.podcasts.clone(),
-        newsletters: ctx.metadata.newsletters.clone(),
-        timelines: ctx.metadata.timelines.clone(),
-    };
+    // Build the content bundle with transformations
+    let bundle = build_bundle(ctx).await?;
 
-    // 4. Write build artifact
     let build_dir = ctx.build_dir();
     tokio::fs::create_dir_all(&build_dir).await?;
     let json = serde_json::to_string_pretty(&bundle)?;
     tokio::fs::write(build_dir.join("content.json"), json).await?;
 
-    // 5. Copy referenced content files to build/assets
-    let assets_dir = build_dir.join("assets");
-    tokio::fs::create_dir_all(&assets_dir).await?;
-    for news_item in &ctx.metadata.news {
-        let src = ctx.root.join(&news_item.file);
-        if src.exists() {
-            let dest = assets_dir.join(&news_item.file);
-            if let Some(parent) = dest.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-            tokio::fs::copy(&src, &dest).await?;
-        }
-    }
-
-    // 6. Persist new cache
     let cache = BuildCache::new(&ctx.manifest.build.compiler_version, current_hashes);
-    cache.save(&cache_path)?;
+    cache.save(&cache_path).await?;
 
     let mut report = ValidationReport::new();
     report.info(format!("Built {} news items", ctx.metadata.news.len()));
@@ -79,6 +53,58 @@ pub async fn build(ctx: &ProjectContext, force: bool) -> Result<ValidationReport
         build_dir.join("content.json").display()
     ));
     Ok(report)
+}
+
+async fn build_bundle(ctx: &ProjectContext) -> Result<ContentBundle, CiteError> {
+    let all_slugs: HashSet<&str> = ctx
+        .metadata
+        .all_slugs()
+        .iter()
+        .map(|(_, s)| s.as_str())
+        .collect();
+
+    let mut news = ctx.metadata.news.clone();
+    for item in &mut news {
+        // Embed content from file
+        let path = ctx.root.join(&item.file);
+        if path.exists() {
+            let raw = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+            let processed = resolve_wiki_links(&raw, &all_slugs);
+            item.content = Some(processed);
+        }
+    }
+
+    Ok(ContentBundle {
+        compiler_version: ctx.manifest.build.compiler_version.clone(),
+        project: ctx.manifest.project.name.clone(),
+        artists: ctx.metadata.artists.clone(),
+        news,
+        podcasts: ctx.metadata.podcasts.clone(),
+        newsletters: ctx.metadata.newsletters.clone(),
+        timelines: ctx.metadata.timelines.clone(),
+    })
+}
+
+fn resolve_wiki_links(content: &str, valid_slugs: &HashSet<&str>) -> String {
+    let mut result = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find("[[") {
+        result.push_str(&rest[..start]);
+        rest = &rest[start + 2..];
+        if let Some(end) = rest.find("]]") {
+            let slug = rest[..end].trim();
+            rest = &rest[end + 2..];
+            if valid_slugs.contains(slug) {
+                result.push_str(&format!("[{}]({{{{slug:{slug}}}}})", slug));
+            } else {
+                result.push_str(&format!("[[{slug}]]"));
+            }
+        } else {
+            result.push_str("[[");
+        }
+    }
+    result.push_str(rest);
+    result
 }
 
 #[cfg(test)]
@@ -125,6 +151,7 @@ mod tests {
                     artists: vec![],
                     podcasts: vec![],
                     timelines: vec![],
+                    content: None,
                 }],
                 ..Default::default()
             },
@@ -132,7 +159,12 @@ mod tests {
         let report = build(&ctx, false).await.unwrap();
         assert!(!report.has_errors());
         assert!(ctx.build_dir().join("content.json").exists());
-        assert!(ctx.build_dir().join("assets/content/article.md").exists());
+
+        // Verify content was embedded
+        let json_str = std::fs::read_to_string(ctx.build_dir().join("content.json")).unwrap();
+        let bundle: ContentBundle = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(bundle.news.len(), 1);
+        assert_eq!(bundle.news[0].content.as_deref(), Some("# Hello"));
     }
 
     #[tokio::test]
@@ -146,14 +178,73 @@ mod tests {
         let r1 = build(&ctx, false).await.unwrap();
         assert!(!r1.has_errors());
 
-        // Cache hit — should succeed but be empty (no changes)
         let r2 = build(&ctx, false).await.unwrap();
         assert!(!r2.has_errors());
         assert!(r2.infos.is_empty());
 
-        // Force rebuild
         let r3 = build(&ctx, true).await.unwrap();
         assert!(!r3.has_errors());
         assert!(!r3.infos.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_build_with_wiki_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let content_dir = dir.path().join("content");
+        std::fs::create_dir_all(&content_dir).unwrap();
+        std::fs::write(
+            content_dir.join("main.md"),
+            "See [[ai-article]] for details",
+        )
+        .unwrap();
+
+        let ctx = ProjectContext {
+            root: dir.path().to_path_buf(),
+            manifest: Manifest::default_template("test"),
+            metadata: Metadata {
+                news: vec![
+                    News {
+                        slug: make_slug("main"),
+                        title: "Main".into(),
+                        file: "content/main.md".into(),
+                        citation: None,
+                        category: None,
+                        artists: vec![],
+                        podcasts: vec![],
+                        timelines: vec![],
+                        content: None,
+                    },
+                    News {
+                        slug: make_slug("ai-article"),
+                        title: "AI Article".into(),
+                        file: "content/ai.md".into(),
+                        citation: None,
+                        category: None,
+                        artists: vec![],
+                        podcasts: vec![],
+                        timelines: vec![],
+                        content: None,
+                    },
+                ],
+                ..Default::default()
+            },
+        };
+
+        let report = build(&ctx, false).await.unwrap();
+        assert!(!report.has_errors());
+
+        let json_str = std::fs::read_to_string(ctx.build_dir().join("content.json")).unwrap();
+        let bundle: ContentBundle = serde_json::from_str(&json_str).unwrap();
+        let main = bundle
+            .news
+            .iter()
+            .find(|n| n.slug.as_str() == "main")
+            .unwrap();
+        assert!(
+            main.content
+                .as_deref()
+                .unwrap()
+                .contains("{{slug:ai-article}}")
+        );
     }
 }

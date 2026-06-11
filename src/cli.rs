@@ -73,6 +73,14 @@ pub enum Command {
         #[arg(short, long)]
         path: Option<String>,
     },
+    /// Rollback a deployment by its unique ID
+    Rollback {
+        /// Deployment ID to rollback
+        id: String,
+        /// Project directory path
+        #[arg(short, long)]
+        path: Option<String>,
+    },
     /// Self-update to the latest GitHub release
     Upgrade,
     /// Remove cite-cli binary and clean up shell configuration

@@ -15,7 +15,7 @@ mod validation;
 use clap::Parser;
 use cli::{Cli, Command};
 use colored::Colorize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 
@@ -26,7 +26,7 @@ fn resolve_path(path: Option<String>) -> PathBuf {
     }
 }
 
-fn load_project(root: &PathBuf) -> Result<project::ProjectContext, error::CiteError> {
+fn load_project(root: &Path) -> Result<project::ProjectContext, error::CiteError> {
     debug!(path = %root.display(), "Loading project context");
     project::ProjectContext::load(root)
 }
@@ -129,18 +129,15 @@ async fn run(cli: &Cli) -> Result<(), error::CiteError> {
                 }
             }
 
-            match load_project(&root) {
-                Ok(ctx) => {
-                    if ctx.manifest.backend.is_some() {
-                        eprintln!("  {} Backend configured for staging", "✔".green());
-                    } else {
-                        eprintln!("  {} No backend configured (deploy will fail)", "ℹ".cyan());
-                    }
-                    if ctx.manifest.build.incremental {
-                        eprintln!("  {} Incremental builds enabled", "✔".green());
-                    }
+            if let Ok(ctx) = load_project(&root) {
+                if ctx.manifest.backend.is_some() {
+                    eprintln!("  {} Backend configured for staging", "✔".green());
+                } else {
+                    eprintln!("  {} No backend configured (deploy will fail)", "ℹ".cyan());
                 }
-                Err(_) => {}
+                if ctx.manifest.build.incremental {
+                    eprintln!("  {} Incremental builds enabled", "✔".green());
+                }
             }
 
             Ok(())
@@ -150,6 +147,11 @@ async fn run(cli: &Cli) -> Result<(), error::CiteError> {
             scaffold::clean_project(&root)?;
             eprintln!("{}", "✔ Cleaned build artifacts".green().bold());
             Ok(())
+        }
+        Command::Rollback { id, path } => {
+            let root = resolve_path(path.clone());
+            let ctx = load_project(&root)?;
+            deploy::rollback(&ctx, id).await
         }
         Command::Upgrade => upgrade::upgrade().await,
         Command::Uninstall { force } => uninstall::uninstall(*force),

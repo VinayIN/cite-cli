@@ -13,6 +13,11 @@ pub fn validate_all(ctx: &ProjectContext) -> ValidationReport {
     validate_cross_references(ctx, &mut report);
     validate_file_existence(ctx, &mut report);
     validate_asset_formats(ctx, &mut report);
+    validate_broken_links(ctx, &mut report);
+
+    if ctx.manifest.validation.strict {
+        enforce_strict_rules(ctx, &mut report);
+    }
 
     report
 }
@@ -163,13 +168,6 @@ fn validate_asset_formats(ctx: &ProjectContext, report: &mut ValidationReport) {
         .iter()
         .map(|s| s.as_str())
         .collect();
-    let _allowed_images: HashSet<&str> = ctx
-        .manifest
-        .assets
-        .image_formats
-        .iter()
-        .map(|s| s.as_str())
-        .collect();
 
     for pod in &ctx.metadata.podcasts {
         let ext = Path::new(&pod.file)
@@ -197,6 +195,100 @@ fn validate_asset_formats(ctx: &ProjectContext, report: &mut ValidationReport) {
             ));
         }
     }
+}
+
+fn validate_broken_links(ctx: &ProjectContext, report: &mut ValidationReport) {
+    let all_slugs: HashSet<&str> = ctx
+        .metadata
+        .all_slugs()
+        .iter()
+        .map(|(_, s)| s.as_str())
+        .collect();
+
+    for news in &ctx.metadata.news {
+        let path = ctx.root.join(&news.file);
+        if !path.exists() {
+            continue;
+        }
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            // Detect wiki-style [[slug]] references
+            for cap in content.split("[[") {
+                if let Some(slug) = cap.split("]]").next() {
+                    let slug = slug.trim();
+                    if !slug.is_empty() && !all_slugs.contains(slug) {
+                        report.warning(format!(
+                            "News '{}' has broken wiki-link '[[{}]]' — no matching slug found",
+                            news.slug, slug
+                        ));
+                    }
+                }
+            }
+            // Detect markdown links to local files
+            for cap in content.split("](") {
+                if let Some(target) = cap.split(')').next() {
+                    let target = target.trim();
+                    if !target.starts_with("http") && !target.starts_with('#') && !target.is_empty()
+                    {
+                        let resolved = ctx.root.join(target);
+                        if !resolved.exists() {
+                            report.warning(format!(
+                                "News '{}' has broken link to '{}' — file not found",
+                                news.slug, target
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn enforce_strict_rules(ctx: &ProjectContext, report: &mut ValidationReport) {
+    for pod in &ctx.metadata.podcasts {
+        if pod.duration_seconds.is_none() {
+            report.error(format!(
+                "Podcast '{}' has no duration_seconds set (strict mode)",
+                pod.slug
+            ));
+        }
+    }
+    // Validate date formats in strict mode
+    for nl in &ctx.metadata.newsletters {
+        if let Some(date) = &nl.published_date
+            && !is_valid_date(date)
+        {
+            report.error(format!(
+                "Newsletter '{}' has invalid published_date '{}' (expected YYYY-MM-DD)",
+                nl.slug, date
+            ));
+        }
+    }
+    for tl in &ctx.metadata.timelines {
+        for entry in &tl.entries {
+            if !is_valid_date(&entry.date) {
+                report.error(format!(
+                    "Timeline '{}' entry '{}' has invalid date '{}' (expected YYYY-MM-DD)",
+                    tl.slug, entry.title, entry.date
+                ));
+            }
+        }
+    }
+}
+
+fn is_valid_date(s: &str) -> bool {
+    if s.len() != 10 {
+        return false;
+    }
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    parts[0].len() == 4
+        && parts[0].chars().all(|c| c.is_ascii_digit())
+        && parts[1].len() == 2
+        && parts[1].chars().all(|c| c.is_ascii_digit())
+        && parts[2].len() == 2
+        && parts[2].chars().all(|c| c.is_ascii_digit())
 }
 
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name))]
@@ -227,15 +319,15 @@ pub fn lint_all(ctx: &ProjectContext) -> ValidationReport {
     // Word counts / basic content checks
     for news in &ctx.metadata.news {
         let path = ctx.root.join(&news.file);
-        if path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let word_count = content.split_whitespace().count();
-                if word_count < 10 {
-                    report.warning(format!(
-                        "News '{}' is very short ({} words)",
-                        news.slug, word_count
-                    ));
-                }
+        if path.exists()
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            let word_count = content.split_whitespace().count();
+            if word_count < 10 {
+                report.warning(format!(
+                    "News '{}' is very short ({} words)",
+                    news.slug, word_count
+                ));
             }
         }
     }
@@ -307,6 +399,7 @@ mod tests {
                 artists: vec![],
                 podcasts: vec![],
                 timelines: vec![],
+                content: None,
             },
             News {
                 slug: make_slug("dup"),
@@ -317,6 +410,7 @@ mod tests {
                 artists: vec![],
                 podcasts: vec![],
                 timelines: vec![],
+                content: None,
             },
         ];
         let (ctx, _dir) = test_context(news, vec![]);
@@ -336,6 +430,7 @@ mod tests {
             artists: vec![make_slug("nonexistent")],
             podcasts: vec![],
             timelines: vec![],
+            content: None,
         }];
         let (ctx, _dir) = test_context(news, vec![]);
         let report = validate_all(&ctx);
@@ -354,6 +449,7 @@ mod tests {
             artists: vec![],
             podcasts: vec![],
             timelines: vec![],
+            content: None,
         }];
         let (ctx, _dir) = test_context(news, vec![]);
         let report = lint_all(&ctx);

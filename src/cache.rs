@@ -20,9 +20,9 @@ impl BuildCache {
         }
     }
 
-    pub fn load_or_default(path: &Path) -> Result<Self, CiteError> {
+    pub async fn load_or_default(path: &Path) -> Result<Self, CiteError> {
         if path.exists() {
-            let data = std::fs::read_to_string(path)?;
+            let data = tokio::fs::read_to_string(path).await?;
             Ok(serde_json::from_str(&data).unwrap_or_else(|_| BuildCache {
                 compiler_version: String::new(),
                 hashes: HashMap::new(),
@@ -35,12 +35,12 @@ impl BuildCache {
         }
     }
 
-    pub fn save(&self, path: &Path) -> Result<(), CiteError> {
+    pub async fn save(&self, path: &Path) -> Result<(), CiteError> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            tokio::fs::create_dir_all(parent).await?;
         }
         let data = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, data)?;
+        tokio::fs::write(path, data).await?;
         Ok(())
     }
 
@@ -73,4 +73,40 @@ pub async fn hash_files(files: &[impl AsRef<Path>]) -> Result<HashMap<String, St
         }
     }
     Ok(hashes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_changed_since_new_file() {
+        let cache = BuildCache::new("0", HashMap::new());
+        let mut current = HashMap::new();
+        current.insert("a.md".into(), "abc".into());
+        let changed = cache.changed_since(&current);
+        assert_eq!(changed, vec!["a.md"]);
+    }
+
+    #[test]
+    fn test_changed_since_unchanged() {
+        let mut hashes = HashMap::new();
+        hashes.insert("a.md".into(), "abc".into());
+        let cache = BuildCache::new("0", hashes);
+        let mut current = HashMap::new();
+        current.insert("a.md".into(), "abc".into());
+        let changed = cache.changed_since(&current);
+        assert!(changed.is_empty());
+    }
+
+    #[test]
+    fn test_changed_since_modified() {
+        let mut hashes = HashMap::new();
+        hashes.insert("a.md".into(), "abc".into());
+        let cache = BuildCache::new("0", hashes);
+        let mut current = HashMap::new();
+        current.insert("a.md".into(), "def".into());
+        let changed = cache.changed_since(&current);
+        assert_eq!(changed, vec!["a.md"]);
+    }
 }
