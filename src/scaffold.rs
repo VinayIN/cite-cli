@@ -1,5 +1,6 @@
 use crate::error::CiteError;
 use crate::manifest::Manifest;
+use std::fs;
 use std::path::Path;
 use tracing::instrument;
 
@@ -12,38 +13,27 @@ pub fn init_project(name: &str, root: &Path) -> Result<(), CiteError> {
         )));
     }
 
-    // Create directory structure
-    let dirs = [
-        root.join("content"),
-        root.join("assets/audio"),
-        root.join("assets/images"),
-        root.join("build"),
-    ];
-    for dir in &dirs {
-        std::fs::create_dir_all(dir)?;
+    for sub in ["content", "assets/audio", "assets/images", "build"] {
+        fs::create_dir_all(root.join(sub))?;
     }
 
-    // Write cite.toml
     let manifest = Manifest::default_template(name);
-    let toml_str = toml::to_string_pretty(&manifest)
-        .map_err(|e| CiteError::Config(format!("Failed to serialize manifest: {e}")))?;
-    std::fs::write(root.join("cite.toml"), toml_str)?;
+    let toml_str =
+        toml::to_string_pretty(&manifest).map_err(|e| CiteError::Config(e.to_string()))?;
+    fs::write(root.join("cite.toml"), toml_str)?;
 
-    // Write starter metadata.yml
-    let metadata_yaml = r#"# cite-cli metadata
+    let metadata_yaml = r"
+# cite-cli metadata
 # Add your content entries below.
 
 artists: []
 news: []
 podcasts: []
 newsletters: []
-timelines: []
-"#;
-    std::fs::write(root.join("metadata.yml"), metadata_yaml)?;
+";
+    fs::write(root.join("metadata.yml"), metadata_yaml)?;
 
-    // Write .gitignore
-    let gitignore = "build/\n.cite-cache.json\n";
-    std::fs::write(root.join(".gitignore"), gitignore)?;
+    fs::write(root.join(".gitignore"), "build/\n.cite-cache.json\n")?;
 
     Ok(())
 }
@@ -52,11 +42,11 @@ timelines: []
 pub fn clean_project(root: &Path) -> Result<(), CiteError> {
     let build_dir = root.join("build");
     if build_dir.exists() {
-        std::fs::remove_dir_all(&build_dir)?;
+        fs::remove_dir_all(&build_dir)?;
     }
     let cache = root.join(".cite-cache.json");
     if cache.exists() {
-        std::fs::remove_file(&cache)?;
+        fs::remove_file(&cache)?;
     }
     Ok(())
 }

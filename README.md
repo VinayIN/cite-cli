@@ -27,10 +27,10 @@ cargo build --release
 ## Usage
 
 ```bash
-cargo run init my-project
-cargo run validate --path my-project
-cargo run build --path my-project
-cargo run status --path my-project
+cite-cli init my-project
+cite-cli validate --path my-project
+cite-cli build --path my-project
+cite-cli status --path my-project
 ```
 
 ## Tests

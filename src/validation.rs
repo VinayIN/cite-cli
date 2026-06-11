@@ -77,12 +77,6 @@ fn validate_cross_references(ctx: &ProjectContext, report: &mut ValidationReport
         .iter()
         .map(|p| p.slug.to_string())
         .collect();
-    let valid_timelines: HashSet<String> = ctx
-        .metadata
-        .timelines
-        .iter()
-        .map(|t| t.slug.to_string())
-        .collect();
     let valid_news: HashSet<String> = ctx
         .metadata
         .news
@@ -103,14 +97,6 @@ fn validate_cross_references(ctx: &ProjectContext, report: &mut ValidationReport
             if !valid_podcasts.contains(ref_slug.as_str()) {
                 report.error(format!(
                     "News '{}' references unknown podcast '{}'",
-                    news.slug, ref_slug
-                ));
-            }
-        }
-        for ref_slug in &news.timelines {
-            if !valid_timelines.contains(ref_slug.as_str()) {
-                report.error(format!(
-                    "News '{}' references unknown timeline '{}'",
                     news.slug, ref_slug
                 ));
             }
@@ -263,16 +249,6 @@ fn enforce_strict_rules(ctx: &ProjectContext, report: &mut ValidationReport) {
             ));
         }
     }
-    for tl in &ctx.metadata.timelines {
-        for entry in &tl.entries {
-            if !is_valid_date(&entry.date) {
-                report.error(format!(
-                    "Timeline '{}' entry '{}' has invalid date '{}' (expected YYYY-MM-DD)",
-                    tl.slug, entry.title, entry.date
-                ));
-            }
-        }
-    }
 }
 
 fn is_valid_date(s: &str) -> bool {
@@ -358,7 +334,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             root.join("metadata.yml"),
-            "artists: []\nnews: []\npodcasts: []\nnewsletters: []\ntimelines: []\n",
+            "artists: []\nnews: []\npodcasts: []\nnewsletters: []\n",
         )
         .unwrap();
         std::fs::create_dir_all(root.join("content")).unwrap();
@@ -398,7 +374,6 @@ mod tests {
                 category: None,
                 artists: vec![],
                 podcasts: vec![],
-                timelines: vec![],
                 content: None,
             },
             News {
@@ -409,7 +384,6 @@ mod tests {
                 category: None,
                 artists: vec![],
                 podcasts: vec![],
-                timelines: vec![],
                 content: None,
             },
         ];
@@ -429,7 +403,6 @@ mod tests {
             category: None,
             artists: vec![make_slug("nonexistent")],
             podcasts: vec![],
-            timelines: vec![],
             content: None,
         }];
         let (ctx, _dir) = test_context(news, vec![]);
@@ -448,7 +421,6 @@ mod tests {
             category: None,
             artists: vec![],
             podcasts: vec![],
-            timelines: vec![],
             content: None,
         }];
         let (ctx, _dir) = test_context(news, vec![]);

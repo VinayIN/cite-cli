@@ -25,7 +25,7 @@
 - **Project**: A folder following cite-cli’s standardized project structure.
 - **Manifest**: `cite.toml` at the root — central configuration for project metadata, build settings, and backend targets.
 - **Content files**: Pure Markdown (`.md`), BibTeX (`.bib`) for citation, reStructuredText (`.rst`), or other supported text formats with **no embedded frontmatter** — metadata is kept separate.
-- **Metadata file**: A single `metadata.yml` at the project root that describes all content (artists, news, podcasts, newsletters, timelines) with references to content files.
+- **Metadata file**: A single `metadata.yml` at the project root that describes all content (artists, news, podcasts, newsletters) with references to content files.
 - **Slug**: The canonical, kebab-case identifier used across metadata, file references, and database records. Must be unique per content type.
 - **Compiler Protocol**: A versioned process that transforms source files into a structured output bundle ready for database ingestion.
 - **Staging Environment**: All deployments target the staging environment/schema exclusively, ensuring a safe, isolated testing ground.
@@ -90,7 +90,6 @@ news:
     category: "artificial intelligence"
     artists: [jane-doe] # Supports multiple authors
     podcasts: [my-podcast-1]
-    timelines: [ai-timeline-1]
 
 podcasts:
   - slug: my-podcast-1
@@ -104,20 +103,9 @@ newsletters:
     issue_number: 42
     published_date: 2026-06-01
     included_news: [my-article-1]
-
-timelines:
-  - slug: ai-timeline-1
-    title: "AI Timeline"
-    entries:
-      - date: 2026-01-15
-        title: "Breakthrough"
-        summary: "My article is a Breakthrough in AI"
-      - date: 2026-02-15
-        title: "Follow-up"
-        summary: "My article is a follow-up on the Breakthrough"
 ```
 
-All relational references (`podcasts`, `timelines`, `artists`, etc.) use the target item’s `slug` and are defined as arrays to support one-to-many relationships.
+All relational references (`podcasts`, `newsletters`, `artists`, etc.) use the target item’s `slug` and are defined as arrays to support one-to-many relationships.
 
 ### 6.3 Validation & Linting
 - Validate project structure against `cite.toml` expectations.

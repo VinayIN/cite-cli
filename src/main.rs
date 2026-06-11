@@ -93,7 +93,6 @@ async fn run(cli: &Cli) -> Result<(), error::CiteError> {
             eprintln!("  News:     {}", ctx.metadata.news.len());
             eprintln!("  Podcasts: {}", ctx.metadata.podcasts.len());
             eprintln!("  Newsletters: {}", ctx.metadata.newsletters.len());
-            eprintln!("  Timelines: {}", ctx.metadata.timelines.len());
             let build_dir = ctx.build_dir();
             if build_dir.join("content.json").exists() {
                 eprintln!("  Build:    {} (exists)", "✔".green());

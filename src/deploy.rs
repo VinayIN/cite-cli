@@ -6,7 +6,7 @@ use std::env;
 use std::path::Path;
 use tracing::instrument;
 
-const TABLES: &[&str] = &["artists", "news", "podcasts", "newsletters", "timelines"];
+const TABLES: &[&str] = &["artists", "news", "podcasts", "newsletters"];
 const STORAGE_BUCKET: &str = "assets";
 
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name, dry_run))]
@@ -44,7 +44,8 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
 
     // Upload assets to storage and rewrite URLs
     if !dry_run {
-        upload_assets(ctx, &client, base_url, &service_key, &mut bundle).await?;
+        let build_dir = ctx.build_dir();
+        upload_assets(&build_dir, &client, base_url, &service_key, &mut bundle).await?;
     }
 
     // Upsert data to tables
@@ -164,17 +165,29 @@ fn resolve_service_key(backend: &crate::manifest::BackendConfig) -> Result<Strin
 }
 
 async fn upload_assets(
-    ctx: &ProjectContext,
+    build_dir: &Path,
     client: &reqwest::Client,
     base_url: &str,
     service_key: &str,
     bundle: &mut Value,
 ) -> Result<(), CiteError> {
-    let project_slug = &ctx.manifest.project.name;
+    let project_slug = bundle
+        .get("project")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
 
     // Upload news content files
     if let Some(news) = bundle.get_mut("news").and_then(|v| v.as_array_mut()) {
-        upload_content_assets(news, client, base_url, service_key, project_slug, &ctx.root).await?;
+        upload_content_assets(
+            news,
+            client,
+            base_url,
+            service_key,
+            &project_slug,
+            build_dir,
+        )
+        .await?;
     }
 
     // Upload podcast audio files
@@ -184,8 +197,8 @@ async fn upload_assets(
             client,
             base_url,
             service_key,
-            project_slug,
-            &ctx.root,
+            &project_slug,
+            build_dir,
         )
         .await?;
     }

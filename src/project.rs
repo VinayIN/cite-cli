@@ -86,9 +86,6 @@ impl Metadata {
         for n in &self.newsletters {
             slugs.push(("newsletters", &n.slug));
         }
-        for t in &self.timelines {
-            slugs.push(("timelines", &t.slug));
-        }
         slugs
     }
 }
@@ -97,7 +94,7 @@ impl Metadata {
 mod tests {
     use super::*;
     use crate::manifest::Manifest;
-    use crate::metadata::{News, Podcast, Newsletter};
+    use crate::metadata::{News, Newsletter, Podcast};
     use crate::slug::Slug;
     use std::path::PathBuf;
 
@@ -112,17 +109,28 @@ mod tests {
             manifest: Manifest::default_template("test"),
             metadata: Metadata {
                 news: vec![News {
-                    slug: slug("a"), title: "A".into(), file: "content/a.md".into(),
-                    citation: Some("content/a.bib".into()), category: None,
-                    artists: vec![], podcasts: vec![], timelines: vec![], content: None,
+                    slug: slug("a"),
+                    title: "A".into(),
+                    file: "content/a.md".into(),
+                    citation: Some("content/a.bib".into()),
+                    category: None,
+                    artists: vec![],
+                    podcasts: vec![],
+                    content: None,
                 }],
                 podcasts: vec![Podcast {
-                    slug: slug("p"), title: "P".into(), file: "assets/audio/p.mp3".into(),
+                    slug: slug("p"),
+                    title: "P".into(),
+                    file: "assets/audio/p.mp3".into(),
                     duration_seconds: None,
                 }],
                 newsletters: vec![Newsletter {
-                    slug: slug("n"), title: "N".into(), issue_number: None,
-                    published_date: None, included_news: vec![], file: Some("content/n.md".into()),
+                    slug: slug("n"),
+                    title: "N".into(),
+                    issue_number: None,
+                    published_date: None,
+                    included_news: vec![],
+                    file: Some("content/n.md".into()),
                 }],
                 ..Default::default()
             },

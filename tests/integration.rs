@@ -1,6 +1,6 @@
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::fs;
 
 struct ProjectHarness {
     _dir: tempfile::TempDir,
@@ -94,9 +94,8 @@ fn init_creates_project_structure() {
 #[test]
 fn init_fails_on_existing_nonempty() {
     let h = ProjectHarness::new("existing");
-    let (_, stderr, ok) = ProjectHarness::output(&[
-        "init", "--path", h.project.to_str().unwrap(), "existing",
-    ]);
+    let (_, stderr, ok) =
+        ProjectHarness::output(&["init", "--path", h.project.to_str().unwrap(), "existing"]);
     assert!(!ok);
     assert!(stderr.contains("not empty"));
 }
@@ -112,7 +111,8 @@ fn validate_passes_on_empty_project() {
 #[test]
 fn validate_catches_missing_file() {
     let h = ProjectHarness::new("missing-file");
-    h.write_metadata(r#"
+    h.write_metadata(
+        r#"
 artists: []
 news:
   - slug: broken
@@ -120,8 +120,8 @@ news:
     file: content/nonexistent.md
 podcasts: []
 newsletters: []
-timelines: []
-"#);
+"#,
+    );
     let (_, stderr, ok) = h.run(&["validate"]);
     assert!(!ok);
     assert!(stderr.contains("does not exist"));
@@ -131,7 +131,8 @@ timelines: []
 fn validate_catches_bad_cross_ref() {
     let h = ProjectHarness::new("bad-xref");
     h.write_content("content/a.md", "# A");
-    h.write_metadata(r#"
+    h.write_metadata(
+        r#"
 artists: []
 news:
   - slug: a
@@ -140,8 +141,8 @@ news:
     artists: [nonexistent-artist]
 podcasts: []
 newsletters: []
-timelines: []
-"#);
+"#,
+    );
     let (_, stderr, ok) = h.run(&["validate"]);
     assert!(!ok);
     assert!(stderr.contains("unknown artist"));
@@ -162,7 +163,8 @@ fn validate_catches_missing_metadata() {
 fn lint_warns_on_short_content() {
     let h = ProjectHarness::new("short-content");
     h.write_content("content/a.md", "Hi");
-    h.write_metadata(r#"
+    h.write_metadata(
+        r#"
 artists: []
 news:
   - slug: a
@@ -170,8 +172,8 @@ news:
     file: content/a.md
 podcasts: []
 newsletters: []
-timelines: []
-"#);
+"#,
+    );
     let (_, stderr, ok) = h.run(&["lint"]);
     assert!(ok);
     assert!(stderr.contains("very short"));
@@ -183,7 +185,8 @@ timelines: []
 fn build_produces_valid_content_json() {
     let h = ProjectHarness::new("build-test");
     h.write_content("content/article.md", "# Hello World");
-    h.write_metadata(r#"
+    h.write_metadata(
+        r#"
 artists:
   - slug: alice
     name: "Alice"
@@ -195,8 +198,8 @@ news:
     artists: [alice]
 podcasts: []
 newsletters: []
-timelines: []
-"#);
+"#,
+    );
 
     h.run_ok(&["build"]);
 
@@ -211,10 +214,73 @@ timelines: []
 }
 
 #[test]
+fn build_generates_timelines_from_bib_citations() {
+    let h = ProjectHarness::new("bib-timeline-test");
+    h.write_content("content/release.md", "# v1.0 Released");
+    h.write_content(
+        "content/papers.bib",
+        r#"
+@article{paper2023,
+  title = {Breakthrough in Materials},
+  author = {Smith, J.},
+  year = {2023},
+  month = jun,
+  abstract = {A major breakthrough.},
+}
+@inproceedings{paper2024,
+  title = {Follow-up Study},
+  author = {Smith, J. and Doe, A.},
+  year = {2024},
+  month = jan,
+  abstract = {Extended results.},
+}
+"#,
+    );
+    h.write_metadata(
+        r#"
+artists: []
+news:
+  - slug: release-1
+    title: "Release 1"
+    file: content/release.md
+    citation: content/papers.bib
+podcasts: []
+newsletters: []
+"#,
+    );
+
+    h.run_ok(&["build"]);
+    let bundle = h.read_bundle();
+
+    let timelines = bundle["timelines"].as_array().unwrap();
+    assert_eq!(
+        timelines.len(),
+        1,
+        "should generate one timeline from citation"
+    );
+
+    let tl = &timelines[0];
+    assert_eq!(tl["slug"], "release-1-timeline");
+    assert_eq!(tl["title"], "Release 1 Timeline");
+
+    let entries = tl["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["date"], "2023-06");
+    assert!(
+        entries[0]["title"]
+            .as_str()
+            .unwrap()
+            .contains("Breakthrough")
+    );
+    assert_eq!(entries[1]["date"], "2024-01");
+}
+
+#[test]
 fn build_is_idempotent_with_cache() {
     let h = ProjectHarness::new("cached-build");
     h.write_content("content/article.md", "# Same");
-    h.write_metadata(r#"
+    h.write_metadata(
+        r#"
 artists: []
 news:
   - slug: a
@@ -222,8 +288,8 @@ news:
     file: content/article.md
 podcasts: []
 newsletters: []
-timelines: []
-"#);
+"#,
+    );
 
     h.run_ok(&["build"]);
     let first = h.read_bundle();
@@ -243,7 +309,8 @@ fn build_embeds_content_and_resolves_wiki_links() {
     let h = ProjectHarness::new("wiki-test");
     h.write_content("content/main.md", "See [[ai-article]] for details");
     h.write_content("content/ai.md", "# AI Article");
-    h.write_metadata(r#"
+    h.write_metadata(
+        r#"
 artists: []
 news:
   - slug: main
@@ -254,14 +321,18 @@ news:
     file: content/ai.md
 podcasts: []
 newsletters: []
-timelines: []
-"#);
+"#,
+    );
 
     h.run_ok(&["build"]);
 
     let bundle = h.read_bundle();
-    let main = bundle["news"].as_array().unwrap().iter()
-        .find(|n| n["slug"] == "main").unwrap();
+    let main = bundle["news"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["slug"] == "main")
+        .unwrap();
     let content = main["content"].as_str().unwrap();
     assert!(
         content.contains("{{slug:ai-article}}"),
@@ -279,7 +350,8 @@ timelines: []
 fn status_shows_project_info() {
     let h = ProjectHarness::new("status-test");
     h.write_content("content/a.md", "# Content");
-    h.write_metadata(r#"
+    h.write_metadata(
+        r#"
 artists:
   - slug: alice
     name: "Alice"
@@ -290,8 +362,8 @@ news:
     artists: [alice]
 podcasts: []
 newsletters: []
-timelines: []
-"#);
+"#,
+    );
 
     let stderr = h.run_ok(&["status"]);
     assert!(stderr.contains("status-test"));
@@ -307,9 +379,8 @@ timelines: []
 
 #[test]
 fn doctor_detects_missing_project() {
-    let (_, stderr, ok) = ProjectHarness::output(&[
-        "doctor", "--path", "/tmp/nonexistent-project-test-12345",
-    ]);
+    let (_, stderr, ok) =
+        ProjectHarness::output(&["doctor", "--path", "/tmp/nonexistent-project-test-12345"]);
     assert!(ok);
     assert!(stderr.contains("cite.toml not found"));
 }
@@ -328,7 +399,8 @@ fn doctor_shows_project_health() {
 fn clean_removes_artifacts_and_is_idempotent() {
     let h = ProjectHarness::new("clean-test");
     h.write_content("content/a.md", "# A");
-    h.write_metadata(r#"
+    h.write_metadata(
+        r#"
 artists: []
 news:
   - slug: a
@@ -336,14 +408,17 @@ news:
     file: content/a.md
 podcasts: []
 newsletters: []
-timelines: []
-"#);
+"#,
+    );
     h.run_ok(&["build"]);
     assert!(h.project.join("build").exists());
 
     h.run_ok(&["clean"]);
     assert!(!h.project.join("build").exists(), "build/ removed");
-    assert!(!h.project.join(".cite-cache.json").exists(), "cache removed");
+    assert!(
+        !h.project.join(".cite-cache.json").exists(),
+        "cache removed"
+    );
 
     h.run_ok(&["clean"]);
 }
@@ -388,7 +463,8 @@ fn full_workflow_end_to_end() {
 
     h.write_content("content/ai.md", "# AI Article\nSee [[ml-article]].");
     h.write_content("content/ml.md", "# ML Article");
-    h.write_metadata(r#"
+    h.write_metadata(
+        r#"
 artists:
   - slug: alice
     name: "Alice"
@@ -416,14 +492,8 @@ newsletters:
     issue_number: 1
     published_date: "2026-06-10"
     included_news: [ai-article]
-timelines:
-  - slug: ai-timeline
-    title: "AI Timeline"
-    entries:
-      - date: "2026-01-01"
-        title: "Start"
-        summary: "The beginning"
-"#);
+"#,
+    );
 
     h.run_ok(&["validate"]);
     h.run_ok(&["lint"]);
@@ -434,13 +504,17 @@ timelines:
     assert!(stderr.contains("News:     2"));
     assert!(stderr.contains("Podcasts: 1"));
     assert!(stderr.contains("Newsletters: 1"));
-    assert!(stderr.contains("Timelines: 1"));
 
     let bundle = h.read_bundle();
     assert_eq!(bundle["project"], "e2e");
     assert_eq!(bundle["artists"].as_array().unwrap().len(), 2);
     assert_eq!(bundle["news"].as_array().unwrap().len(), 2);
-    assert!(bundle["news"][0]["content"].as_str().unwrap().contains("{{slug:ml-article}}"));
+    assert!(
+        bundle["news"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("{{slug:ml-article}}")
+    );
 
     h.run_ok(&["clean"]);
     assert!(!h.project.join("build").exists());

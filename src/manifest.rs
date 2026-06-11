@@ -186,7 +186,10 @@ image_formats = ["jpg"]
         assert_eq!(m.build.compiler_version, "1");
         assert!(!m.build.incremental);
         assert!(m.backend.is_some());
-        assert_eq!(m.backend.as_ref().unwrap().staging_url, "https://example.com");
+        assert_eq!(
+            m.backend.as_ref().unwrap().staging_url,
+            "https://example.com"
+        );
         assert_eq!(m.assets.audio_formats, vec!["mp3"]);
     }
 }
