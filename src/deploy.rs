@@ -6,7 +6,7 @@ use std::env;
 use std::path::Path;
 use tracing::instrument;
 
-const TABLES: &[&str] = &["artists", "news", "podcasts", "newsletters"];
+const TABLES: &[&str] = &["artists", "news", "podcasts"];
 const STORAGE_BUCKET: &str = "assets";
 
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name, dry_run))]
@@ -35,18 +35,28 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
             .cyan()
             .bold()
     );
+
     if dry_run {
         eprintln!("{}", "  DRY RUN - no data will be sent".yellow().bold());
+        for table in TABLES {
+            if let Some(items) = bundle.get(table).and_then(|v| v.as_array())
+                && !items.is_empty()
+            {
+                eprintln!("{}", format!("  Would upsert {} {} items", items.len(), table).cyan());
+            }
+        }
+        if has_assets(&bundle) {
+            eprintln!("{}", "  Would upload assets to storage".cyan());
+        }
+        return Ok(());
     }
 
     let client = reqwest::Client::new();
     let base_url = backend.staging_url.trim_end_matches('/');
 
     // Upload assets to storage and rewrite URLs
-    if !dry_run {
-        let build_dir = ctx.build_dir();
-        upload_assets(&build_dir, &client, base_url, &service_key, &mut bundle).await?;
-    }
+    let build_dir = ctx.build_dir();
+    upload_assets(&build_dir, &client, base_url, &service_key, &mut bundle).await?;
 
     // Upsert data to tables
     for table in TABLES {
@@ -65,14 +75,10 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
             }
 
             eprintln!(
-                "  {} {} items",
-                "→".cyan(),
-                format!("{}: {}", table, items.len()).white()
+                "  {}: {} items",
+                table.cyan(),
+                items.len()
             );
-
-            if dry_run {
-                continue;
-            }
 
             let url = format!("{base_url}/rest/v1/{table}");
             let response = client
@@ -93,16 +99,16 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
                 )));
             }
 
-            eprintln!("    {} Done", "✔".green());
+            eprintln!("    Done");
         }
     }
 
-    if !dry_run {
-        eprintln!(
-            "{} Deployment complete (id: {deployment_id})",
-            "✔".green().bold()
-        );
-    }
+    eprintln!(
+        "{}",
+        format!("Deployment complete (id: {deployment_id})")
+            .green()
+            .bold()
+    );
 
     Ok(())
 }
@@ -139,14 +145,14 @@ pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<(), C
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            eprintln!("  {} Failed to rollback {table}: HTTP {status}", "✖".red());
+            eprintln!("{}", format!("  Failed to rollback {table}: HTTP {status}").red().bold());
             eprintln!("    {body}");
         } else {
-            eprintln!("  {} Cleared {table}", "✔".green());
+            eprintln!("{}", format!("  Cleared {table}").green());
         }
     }
 
-    eprintln!("{} Rollback complete", "✔".green().bold());
+    eprintln!("{}", "Rollback complete".green().bold());
     Ok(())
 }
 
@@ -177,71 +183,23 @@ async fn upload_assets(
         .unwrap_or("unknown")
         .to_string();
 
-    // Upload news content files
-    if let Some(news) = bundle.get_mut("news").and_then(|v| v.as_array_mut()) {
-        upload_content_assets(
-            news,
-            client,
-            base_url,
-            service_key,
-            &project_slug,
-            build_dir,
-        )
-        .await?;
-    }
-
-    // Upload podcast audio files
-    if let Some(podcasts) = bundle.get_mut("podcasts").and_then(|v| v.as_array_mut()) {
-        upload_audio_assets(
-            podcasts,
-            client,
-            base_url,
-            service_key,
-            &project_slug,
-            build_dir,
-        )
-        .await?;
-    }
-
-    Ok(())
-}
-
-async fn upload_content_assets(
-    items: &mut [Value],
-    client: &reqwest::Client,
-    base_url: &str,
-    service_key: &str,
-    project_slug: &str,
-    root: &Path,
-) -> Result<(), CiteError> {
-    for item in items.iter_mut() {
-        let obj = match item.as_object_mut() {
-            Some(o) => o,
-            None => continue,
-        };
-        let (file_val, slug) = match (
-            obj.get("file").and_then(|v| v.as_str()),
-            obj.get("slug").and_then(|v| v.as_str()),
-        ) {
-            (Some(f), Some(s)) => (f, s),
-            _ => continue,
-        };
-        let local = root.join(file_val);
-        let storage_path = format!("{project_slug}/news/{slug}/{file_val}");
-        if let Ok(url) = upload_file(client, base_url, service_key, &storage_path, &local).await {
-            obj.insert("file".to_string(), Value::String(url));
+    for &content_type in &["news", "podcasts"] {
+        if let Some(items) = bundle.get_mut(content_type).and_then(|v| v.as_array_mut()) {
+            upload_assets_for_type(items, client, base_url, service_key, &project_slug, build_dir, content_type).await?;
         }
     }
+
     Ok(())
 }
 
-async fn upload_audio_assets(
+async fn upload_assets_for_type(
     items: &mut [Value],
     client: &reqwest::Client,
     base_url: &str,
     service_key: &str,
     project_slug: &str,
     root: &Path,
+    content_type: &str,
 ) -> Result<(), CiteError> {
     for item in items.iter_mut() {
         let obj = match item.as_object_mut() {
@@ -256,7 +214,7 @@ async fn upload_audio_assets(
             _ => continue,
         };
         let local = root.join(file_val);
-        let storage_path = format!("{project_slug}/podcasts/{slug}/{file_val}");
+        let storage_path = format!("{project_slug}/{content_type}/{slug}/{file_val}");
         if let Ok(url) = upload_file(client, base_url, service_key, &storage_path, &local).await {
             obj.insert("file".to_string(), Value::String(url));
         }
@@ -299,8 +257,8 @@ async fn upload_file(
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         eprintln!(
-            "  {} Failed to upload {storage_path}: HTTP {status}",
-            "✖".red()
+            "{}",
+            format!("  Failed to upload {storage_path}: HTTP {status}").red().bold()
         );
         eprintln!("    {body}");
         return Err(CiteError::Deploy(format!(
@@ -309,8 +267,15 @@ async fn upload_file(
     }
 
     let public_url = format!("{base_url}/storage/v1/object/public/{STORAGE_BUCKET}/{storage_path}");
-    eprintln!("  {} Uploaded {} -> storage", "↑".cyan(), storage_path);
+    eprintln!("  Uploaded {} to storage", storage_path);
     Ok(public_url)
+}
+
+fn has_assets(bundle: &serde_json::Value) -> bool {
+    bundle.get("news")
+        .or_else(|| bundle.get("podcasts"))
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| !a.is_empty())
 }
 
 fn mime_for_extension(ext: &str) -> &'static str {

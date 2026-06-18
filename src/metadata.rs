@@ -9,9 +9,24 @@ pub struct Metadata {
     pub news: Vec<News>,
     #[serde(default)]
     pub podcasts: Vec<Podcast>,
-    #[serde(default)]
-    pub newsletters: Vec<Newsletter>,
 }
+
+impl Metadata {
+    pub fn all_slugs(&self) -> Vec<(&'static str, &Slug)> {
+        let mut slugs = Vec::new();
+        for a in &self.artists {
+            slugs.push(("artists", &a.slug));
+        }
+        for n in &self.news {
+            slugs.push(("news", &n.slug));
+        }
+        for p in &self.podcasts {
+            slugs.push(("podcasts", &p.slug));
+        }
+        slugs
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artist {
     pub slug: Slug,
@@ -41,17 +56,6 @@ pub struct Podcast {
     pub title: String,
     pub file: String,
     pub duration_seconds: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Newsletter {
-    pub slug: Slug,
-    pub title: String,
-    pub issue_number: Option<u64>,
-    pub published_date: Option<String>,
-    #[serde(default)]
-    pub included_news: Vec<Slug>,
-    pub file: Option<String>,
 }
 
 #[cfg(test)]
@@ -87,21 +91,12 @@ mod tests {
                 file: "a.mp3".into(),
                 duration_seconds: None,
             }],
-            newsletters: vec![Newsletter {
-                slug: slug("nl-1"),
-                title: "N".into(),
-                issue_number: None,
-                published_date: None,
-                included_news: vec![],
-                file: None,
-            }],
         };
         let slugs = meta.all_slugs();
-        assert_eq!(slugs.len(), 4);
+        assert_eq!(slugs.len(), 3);
         assert!(slugs.contains(&("artists", &slug("alice"))));
         assert!(slugs.contains(&("news", &slug("article-1"))));
         assert!(slugs.contains(&("podcasts", &slug("pod-1"))));
-        assert!(slugs.contains(&("newsletters", &slug("nl-1"))));
     }
 
     #[test]
@@ -112,7 +107,6 @@ artists:
     name: "Alice"
 news: []
 podcasts: []
-newsletters: []
 "#;
         let meta: Metadata = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(meta.artists.len(), 1);
@@ -143,7 +137,6 @@ pub struct ContentBundle {
     pub artists: Vec<Artist>,
     pub news: Vec<News>,
     pub podcasts: Vec<Podcast>,
-    pub newsletters: Vec<Newsletter>,
     #[serde(default)]
     pub timelines: Vec<Timeline>,
 }

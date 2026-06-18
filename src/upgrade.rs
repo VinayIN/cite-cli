@@ -9,7 +9,7 @@ pub async fn upgrade() -> Result<(), CiteError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| CiteError::Config(format!("Cannot determine executable path: {e}")))?;
 
-    eprintln!("{}", "Checking for updates...".bold());
+    eprintln!("{}", "Checking for updates".bold());
 
     let client = reqwest::Client::new();
     let api_url = format!("https://api.github.com/repos/{REPO}/releases/latest");
@@ -38,7 +38,7 @@ pub async fn upgrade() -> Result<(), CiteError> {
     if current == latest {
         eprintln!(
             "{}",
-            format!("✔ Already up to date (v{current})").green().bold()
+            format!("Already up to date (v{current})").green().bold()
         );
         return Ok(());
     }
@@ -46,14 +46,14 @@ pub async fn upgrade() -> Result<(), CiteError> {
     if !is_newer(latest, current) {
         eprintln!(
             "{}",
-            format!("ℹ Local version v{current} is newer than remote v{latest}").cyan()
+            format!("Local version v{current} is newer than remote v{latest}").cyan()
         );
         return Ok(());
     }
 
     eprintln!(
         "{}",
-        format!("✔ New version available: v{latest} (current: v{current})")
+        format!("New version available: v{latest} (current: v{current})")
             .yellow()
             .bold()
     );
@@ -64,7 +64,7 @@ pub async fn upgrade() -> Result<(), CiteError> {
 
     eprintln!(
         "{}",
-        format!("Downloading {BIN_NAME} v{latest} for {target}...").bold()
+        format!("Downloading {BIN_NAME} v{latest} for {target}").bold()
     );
 
     let tmp_path = {
@@ -93,7 +93,7 @@ pub async fn upgrade() -> Result<(), CiteError> {
 
     std::fs::rename(&tmp_path, &current_exe)?;
 
-    eprintln!("{}", format!("✔ Updated to v{latest}").green().bold());
+    eprintln!("{}", format!("Updated to v{latest}").green().bold());
     Ok(())
 }
 

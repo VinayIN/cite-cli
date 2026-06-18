@@ -52,6 +52,11 @@ impl BuildCache {
                 _ => changed.push(path.clone()),
             }
         }
+        for path in self.hashes.keys() {
+            if !current.contains_key(path) {
+                changed.push(path.clone());
+            }
+        }
         changed
     }
 }

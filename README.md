@@ -38,17 +38,6 @@ cite-cli status --path my-project
 ```bash
 cargo test
 ```
-## Build a release binary:
-
-```bash
-cargo build --release
-./target/release/cite-cli --help
-```
-and then can use this:
-```
-./target/release/cite-cli init my-project
-./target/release/cite-cli validate
-```
 
 ## Commands
 
@@ -57,10 +46,11 @@ and then can use this:
 | `init <name>` | Scaffold a new project |
 | `validate` | Check structure, metadata, cross-refs, file existence |
 | `lint` | Naming conventions, audio metadata, word counts |
-| `build` | Incremental build → `build/content.json` |
+| `build` | Incremental build -> `build/content.json` |
 | `deploy` | Upsert to Supabase staging with rollback support |
 | `status` | Project health overview |
 | `doctor` | Diagnose config and structure issues |
 | `clean` | Remove build artifacts and cache |
 
 All commands accept `--path <dir>` to target a specific directory.
+Without `--path`, projects are auto-discovered in the current directory and subdirectories.

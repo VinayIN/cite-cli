@@ -25,7 +25,7 @@
 - **Project**: A folder following cite-cli’s standardized project structure.
 - **Manifest**: `cite.toml` at the root — central configuration for project metadata, build settings, and backend targets.
 - **Content files**: Pure Markdown (`.md`), BibTeX (`.bib`) for citation, reStructuredText (`.rst`), or other supported text formats with **no embedded frontmatter** — metadata is kept separate.
-- **Metadata file**: A single `metadata.yml` at the project root that describes all content (artists, news, podcasts, newsletters) with references to content files.
+- **Metadata file**: A single `metadata.yml` at the project root that describes all content (artists, news, podcasts) with references to content files.
 - **Slug**: The canonical, kebab-case identifier used across metadata, file references, and database records. Must be unique per content type.
 - **Compiler Protocol**: A versioned process that transforms source files into a structured output bundle ready for database ingestion.
 - **Staging Environment**: All deployments target the staging environment/schema exclusively, ensuring a safe, isolated testing ground.
@@ -97,15 +97,9 @@ podcasts:
     file: assets/audio/podcast.mp3
     duration_seconds: 2700
 
-newsletters:
-  - slug: weekly-ai-digest
-    title: "Weekly AI Digest"
-    issue_number: 42
-    published_date: 2026-06-01
-    included_news: [my-article-1]
 ```
 
-All relational references (`podcasts`, `newsletters`, `artists`, etc.) use the target item’s `slug` and are defined as arrays to support one-to-many relationships.
+All relational references (`podcasts`, `artists`, etc.) use the target item’s `slug` and are defined as arrays to support one-to-many relationships.
 
 ### 6.3 Validation & Linting
 - Validate project structure against `cite.toml` expectations.

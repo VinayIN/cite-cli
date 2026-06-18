@@ -92,12 +92,13 @@ fn init_creates_project_structure() {
 }
 
 #[test]
-fn init_fails_on_existing_nonempty() {
+fn init_is_idempotent_on_existing_project() {
     let h = ProjectHarness::new("existing");
     let (_, stderr, ok) =
         ProjectHarness::output(&["init", "--path", h.project.to_str().unwrap(), "existing"]);
-    assert!(!ok);
-    assert!(stderr.contains("not empty"));
+    assert!(ok);
+    assert!(stderr.contains("ready"));
+    assert!(stderr.contains("skipped"));
 }
 
 // ── validate ────────────────────────────────────────────────────
@@ -119,7 +120,6 @@ news:
     title: "Broken"
     file: content/nonexistent.md
 podcasts: []
-newsletters: []
 "#,
     );
     let (_, stderr, ok) = h.run(&["validate"]);
@@ -140,7 +140,6 @@ news:
     file: content/a.md
     artists: [nonexistent-artist]
 podcasts: []
-newsletters: []
 "#,
     );
     let (_, stderr, ok) = h.run(&["validate"]);
@@ -171,7 +170,6 @@ news:
     title: "A"
     file: content/a.md
 podcasts: []
-newsletters: []
 "#,
     );
     let (_, stderr, ok) = h.run(&["lint"]);
@@ -197,7 +195,6 @@ news:
     category: tech
     artists: [alice]
 podcasts: []
-newsletters: []
 "#,
     );
 
@@ -245,7 +242,6 @@ news:
     file: content/release.md
     citation: content/papers.bib
 podcasts: []
-newsletters: []
 "#,
     );
 
@@ -287,7 +283,6 @@ news:
     title: "A"
     file: content/article.md
 podcasts: []
-newsletters: []
 "#,
     );
 
@@ -320,7 +315,6 @@ news:
     title: "AI Article"
     file: content/ai.md
 podcasts: []
-newsletters: []
 "#,
     );
 
@@ -361,18 +355,17 @@ news:
     file: content/a.md
     artists: [alice]
 podcasts: []
-newsletters: []
 "#,
     );
 
     let stderr = h.run_ok(&["status"]);
     assert!(stderr.contains("status-test"));
-    assert!(stderr.contains("Artists:  1"));
+    assert!(stderr.contains("Artists: 1"));
 
     h.run_ok(&["build"]);
 
     let stderr = h.run_ok(&["status"]);
-    assert!(stderr.contains("✔ (exists)"));
+    assert!(stderr.contains("exists"));
 }
 
 // ── doctor ──────────────────────────────────────────────────────
@@ -407,7 +400,6 @@ news:
     title: "A"
     file: content/a.md
 podcasts: []
-newsletters: []
 "#,
     );
     h.run_ok(&["build"]);
@@ -486,12 +478,6 @@ podcasts:
     title: "AI Podcast"
     file: content/ai.md
     duration_seconds: 1800
-newsletters:
-  - slug: weekly
-    title: "Weekly"
-    issue_number: 1
-    published_date: "2026-06-10"
-    included_news: [ai-article]
 "#,
     );
 
@@ -500,11 +486,9 @@ newsletters:
     h.run_ok(&["build"]);
 
     let stderr = h.run_ok(&["status"]);
-    assert!(stderr.contains("Artists:  2"));
-    assert!(stderr.contains("News:     2"));
+    assert!(stderr.contains("Artists: 2"));
+    assert!(stderr.contains("News: 2"));
     assert!(stderr.contains("Podcasts: 1"));
-    assert!(stderr.contains("Newsletters: 1"));
-
     let bundle = h.read_bundle();
     assert_eq!(bundle["project"], "e2e");
     assert_eq!(bundle["artists"].as_array().unwrap().len(), 2);

@@ -77,12 +77,6 @@ fn validate_cross_references(ctx: &ProjectContext, report: &mut ValidationReport
         .iter()
         .map(|p| p.slug.to_string())
         .collect();
-    let valid_news: HashSet<String> = ctx
-        .metadata
-        .news
-        .iter()
-        .map(|n| n.slug.to_string())
-        .collect();
 
     for news in &ctx.metadata.news {
         for ref_slug in &news.artists {
@@ -103,16 +97,6 @@ fn validate_cross_references(ctx: &ProjectContext, report: &mut ValidationReport
         }
     }
 
-    for nl in &ctx.metadata.newsletters {
-        for ref_slug in &nl.included_news {
-            if !valid_news.contains(ref_slug.as_str()) {
-                report.error(format!(
-                    "Newsletter '{}' references unknown news '{}'",
-                    nl.slug, ref_slug
-                ));
-            }
-        }
-    }
 }
 
 fn validate_file_existence(ctx: &ProjectContext, report: &mut ValidationReport) {
@@ -238,33 +222,6 @@ fn enforce_strict_rules(ctx: &ProjectContext, report: &mut ValidationReport) {
             ));
         }
     }
-    // Validate date formats in strict mode
-    for nl in &ctx.metadata.newsletters {
-        if let Some(date) = &nl.published_date
-            && !is_valid_date(date)
-        {
-            report.error(format!(
-                "Newsletter '{}' has invalid published_date '{}' (expected YYYY-MM-DD)",
-                nl.slug, date
-            ));
-        }
-    }
-}
-
-fn is_valid_date(s: &str) -> bool {
-    if s.len() != 10 {
-        return false;
-    }
-    let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 3 {
-        return false;
-    }
-    parts[0].len() == 4
-        && parts[0].chars().all(|c| c.is_ascii_digit())
-        && parts[1].len() == 2
-        && parts[1].chars().all(|c| c.is_ascii_digit())
-        && parts[2].len() == 2
-        && parts[2].chars().all(|c| c.is_ascii_digit())
 }
 
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name))]
@@ -334,7 +291,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             root.join("metadata.yml"),
-            "artists: []\nnews: []\npodcasts: []\nnewsletters: []\n",
+            "artists: []\nnews: []\npodcasts: []\n",
         )
         .unwrap();
         std::fs::create_dir_all(root.join("content")).unwrap();

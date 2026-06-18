@@ -62,31 +62,7 @@ impl ProjectContext {
         for pod in &self.metadata.podcasts {
             files.push(self.root.join(&pod.file));
         }
-        for nl in &self.metadata.newsletters {
-            if let Some(f) = &nl.file {
-                files.push(self.root.join(f));
-            }
-        }
         files
-    }
-}
-
-impl Metadata {
-    pub fn all_slugs(&self) -> Vec<(&'static str, &crate::slug::Slug)> {
-        let mut slugs = Vec::new();
-        for a in &self.artists {
-            slugs.push(("artists", &a.slug));
-        }
-        for n in &self.news {
-            slugs.push(("news", &n.slug));
-        }
-        for p in &self.podcasts {
-            slugs.push(("podcasts", &p.slug));
-        }
-        for n in &self.newsletters {
-            slugs.push(("newsletters", &n.slug));
-        }
-        slugs
     }
 }
 
@@ -94,7 +70,7 @@ impl Metadata {
 mod tests {
     use super::*;
     use crate::manifest::Manifest;
-    use crate::metadata::{News, Newsletter, Podcast};
+    use crate::metadata::{News, Podcast};
     use crate::slug::Slug;
     use std::path::PathBuf;
 
@@ -124,23 +100,14 @@ mod tests {
                     file: "assets/audio/p.mp3".into(),
                     duration_seconds: None,
                 }],
-                newsletters: vec![Newsletter {
-                    slug: slug("n"),
-                    title: "N".into(),
-                    issue_number: None,
-                    published_date: None,
-                    included_news: vec![],
-                    file: Some("content/n.md".into()),
-                }],
                 ..Default::default()
             },
         };
 
         let files = ctx.content_files();
-        assert_eq!(files.len(), 4);
+        assert_eq!(files.len(), 3);
         assert!(files.contains(&PathBuf::from("/root/content/a.md")));
         assert!(files.contains(&PathBuf::from("/root/content/a.bib")));
         assert!(files.contains(&PathBuf::from("/root/assets/audio/p.mp3")));
-        assert!(files.contains(&PathBuf::from("/root/content/n.md")));
     }
 }

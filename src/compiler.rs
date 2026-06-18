@@ -113,7 +113,7 @@ async fn build_bundle(ctx: &ProjectContext) -> Result<ContentBundle, CiteError> 
         artists: ctx.metadata.artists.clone(),
         news,
         podcasts,
-        newsletters: ctx.metadata.newsletters.clone(),
+
         timelines,
     })
 }
