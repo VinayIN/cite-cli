@@ -64,7 +64,9 @@ Without `--path`, projects are auto-discovered in the current directory and subd
 my-project/
 ├── cite.toml           # Project manifest
 ├── metadata.yml        # Podcast content metadata
-├── content/            # Markdown content files
+├── content/            # Markdown & BibTeX content files
+│   ├── article1.md     
+│   └── article1.bib
 ├── assets/
 │   ├── audio/          # Podcast audio files
 │   └── images/         # Thumbnails and cover art

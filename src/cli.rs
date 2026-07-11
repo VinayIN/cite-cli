@@ -132,7 +132,12 @@ fn load_projects(
     Ok(Some((projects, multi)))
 }
 
-enum Style { Success, Error, Warning, Header }
+enum Style {
+    Success,
+    Error,
+    Warning,
+    Header,
+}
 
 fn styled(msg: impl AsRef<str>, style: Style) -> String {
     let s = msg.as_ref();
@@ -155,7 +160,10 @@ fn check_file(root: &Path, filename: &str, hint: &str) {
     } else if hint.is_empty() {
         eprintln!("{}", styled(format!("{filename} not found"), Style::Error));
     } else {
-        eprintln!("{}", styled(format!("{filename} not found - {hint}"), Style::Error));
+        eprintln!(
+            "{}",
+            styled(format!("{filename} not found - {hint}"), Style::Error)
+        );
     }
 }
 
@@ -170,50 +178,74 @@ impl Command {
                         .join(&name),
                 };
                 let report = scaffold::init_project(&name, &root)?;
-                eprintln!("{}", styled(format!("Project '{name}' ready at {}", root.display()), Style::Success));
+
                 for d in &report.directories_created {
-                    eprintln!("  {} created/", d);
+                    eprintln!("  {} (created)", d);
                 }
                 for f in &report.files_created {
-                    eprintln!("  {} created", f);
+                    eprintln!("  {} (created)", f);
                 }
                 for f in &report.files_skipped {
                     eprintln!("  {} (skipped)", f);
                 }
+                eprintln!(
+                    "{}",
+                    styled(
+                        format!("Project '{name}' ready at {}", root.display()),
+                        Style::Success
+                    )
+                );
                 Ok(())
             }
             Command::Validate { path } => {
-                let Some((projects, multi)) = load_projects(path, "No projects found (no cite.toml found)")? else {
+                let Some((projects, multi)) =
+                    load_projects(path, "No projects found (no cite.toml found)")?
+                else {
                     return Ok(());
                 };
                 let mut has_errors = false;
                 for ctx in &projects {
-                    if multi { print_project_header(&ctx.manifest.project.name); }
+                    if multi {
+                        print_project_header(&ctx.manifest.project.name);
+                    }
                     let report = validation::validate_all(ctx);
                     report.print();
-                    if report.has_errors() { has_errors = true; }
+                    if report.has_errors() {
+                        has_errors = true;
+                    }
                 }
-                if has_errors { Err(CiteError::Validation("Validation failed".to_string())) }
-                else { Ok(()) }
+                if has_errors {
+                    Err(CiteError::Validation("Validation failed".to_string()))
+                } else {
+                    Ok(())
+                }
             }
             Command::Lint { path } => {
-                let Some((projects, multi)) = load_projects(path, "No projects found (no cite.toml found)")? else {
+                let Some((projects, multi)) =
+                    load_projects(path, "No projects found (no cite.toml found)")?
+                else {
                     return Ok(());
                 };
                 for ctx in &projects {
-                    if multi { print_project_header(&ctx.manifest.project.name); }
+                    if multi {
+                        print_project_header(&ctx.manifest.project.name);
+                    }
                     let report = validation::lint_all(ctx);
                     report.print();
                 }
                 Ok(())
             }
             Command::Build { path, force } => {
-                let Some((projects, multi)) = load_projects(path, "No projects found (no cite.toml found)")? else {
+                let Some((projects, multi)) =
+                    load_projects(path, "No projects found (no cite.toml found)")?
+                else {
                     return Ok(());
                 };
                 let mut has_errors = false;
                 for ctx in &projects {
-                    if multi { print_project_header(&ctx.manifest.project.name); }
+                    if multi {
+                        print_project_header(&ctx.manifest.project.name);
+                    }
                     match compiler::build(ctx, force).await {
                         Ok(report) => report.print(),
                         Err(e) => {
@@ -222,31 +254,48 @@ impl Command {
                         }
                     }
                 }
-                if has_errors { Err(CiteError::Deploy("Build failed in one or more projects".to_string())) }
-                else { Ok(()) }
+                if has_errors {
+                    Err(CiteError::Deploy(
+                        "Build failed in one or more projects".to_string(),
+                    ))
+                } else {
+                    Ok(())
+                }
             }
             Command::Deploy { path, dry_run } => {
-                let Some((projects, multi)) = load_projects(path, "No projects found (no cite.toml found)")? else {
+                let Some((projects, multi)) =
+                    load_projects(path, "No projects found (no cite.toml found)")?
+                else {
                     return Ok(());
                 };
                 let mut has_errors = false;
                 for ctx in &projects {
-                    if multi { print_project_header(&ctx.manifest.project.name); }
+                    if multi {
+                        print_project_header(&ctx.manifest.project.name);
+                    }
                     if let Err(e) = deploy::deploy(ctx, dry_run).await {
                         eprintln!("{}", styled(format!("Deploy failed: {e}"), Style::Error));
                         has_errors = true;
                     }
                 }
-                if has_errors { Err(CiteError::Deploy("Deploy failed in one or more projects".to_string())) }
-                else { Ok(()) }
+                if has_errors {
+                    Err(CiteError::Deploy(
+                        "Deploy failed in one or more projects".to_string(),
+                    ))
+                } else {
+                    Ok(())
+                }
             }
             Command::Status { path } => {
                 let Some((projects, multi)) = load_projects(path, "No projects found")? else {
                     return Ok(());
                 };
                 for ctx in &projects {
-                    if multi { print_project_header(&ctx.manifest.project.name); }
-                    else { eprintln!("{}", styled("Project Status", Style::Header)); }
+                    if multi {
+                        print_project_header(&ctx.manifest.project.name);
+                    } else {
+                        eprintln!("{}", styled("Project Status", Style::Header));
+                    }
                     eprintln!("  Name: {}", ctx.manifest.project.name);
                     eprintln!("  Version: {}", ctx.manifest.project.version);
                     eprintln!("  Root: {}", ctx.root.display());
@@ -284,8 +333,11 @@ impl Command {
                     return Ok(());
                 };
                 for ctx in &projects {
-                    if multi { print_project_header(&ctx.manifest.project.name); }
-                    else { eprintln!("{}", styled("Running diagnostics", Style::Header)); }
+                    if multi {
+                        print_project_header(&ctx.manifest.project.name);
+                    } else {
+                        eprintln!("{}", styled("Running diagnostics", Style::Header));
+                    }
                     check_file(&ctx.root, "cite.toml", "run 'cite-cli init'");
                     check_file(&ctx.root, "metadata.yml", "");
                     for dir in &["content", "assets/audio", "assets/images", "build"] {
@@ -297,7 +349,10 @@ impl Command {
                         }
                     }
                     if ctx.manifest.backend.is_some() {
-                        eprintln!("{}", styled("Backend configured for staging", Style::Success));
+                        eprintln!(
+                            "{}",
+                            styled("Backend configured for staging", Style::Success)
+                        );
                     } else {
                         eprintln!("  No backend configured (deploy will fail)");
                     }
@@ -305,16 +360,37 @@ impl Command {
                         eprintln!("{}", styled("Incremental builds enabled", Style::Success));
                     }
                     if ctx.manifest.project.artist_id.is_empty() {
-                        eprintln!("{}", styled("Artist ID is empty - set it in [project] in cite.toml", Style::Warning));
+                        eprintln!(
+                            "{}",
+                            styled(
+                                "Artist ID is empty - set it in [project] in cite.toml",
+                                Style::Warning
+                            )
+                        );
                     } else {
                         eprintln!("  Artist ID: {}", ctx.manifest.project.artist_id);
                     }
                     if std::env::var("CITE_STAGING_SERVICE_KEY").is_ok() {
-                        eprintln!("{}", styled("CITE_STAGING_SERVICE_KEY env var set", Style::Success));
-                    } else if ctx.manifest.backend.as_ref().map(|b| !b.staging_service_key.is_empty()).unwrap_or(false) {
+                        eprintln!(
+                            "{}",
+                            styled("CITE_STAGING_SERVICE_KEY env var set", Style::Success)
+                        );
+                    } else if ctx
+                        .manifest
+                        .backend
+                        .as_ref()
+                        .map(|b| !b.staging_service_key.is_empty())
+                        .unwrap_or(false)
+                    {
                         eprintln!("  Using inline staging_service_key from cite.toml");
                     } else {
-                        eprintln!("{}", styled("No staging service key found - deploy will fail", Style::Warning));
+                        eprintln!(
+                            "{}",
+                            styled(
+                                "No staging service key found - deploy will fail",
+                                Style::Warning
+                            )
+                        );
                     }
                 }
                 Ok(())
@@ -324,7 +400,9 @@ impl Command {
                     return Ok(());
                 };
                 for ctx in &projects {
-                    if multi { print_project_header(&ctx.manifest.project.name); }
+                    if multi {
+                        print_project_header(&ctx.manifest.project.name);
+                    }
                     ctx.clean()?;
                     eprintln!("{}", styled("Cleaned build artifacts", Style::Success));
                 }

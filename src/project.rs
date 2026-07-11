@@ -85,7 +85,7 @@ mod tests {
             manifest: Manifest::default_template("test"),
             metadata: Metadata {
                 podcasts: vec![crate::metadata::Podcast {
-                    id: None,
+                    id: Some("abc".into()),
                     title: "P".into(),
                     file: "content/p.md".into(),
                     source_url: None,

@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn test_validate_file_not_found() {
         let (ctx, _dir) = test_context(vec![Podcast {
-            id: None,
+            id: Some("abc".into()),
             title: "Missing".into(),
             file: "content/nonexistent.md".into(),
             source_url: None,
@@ -200,7 +200,7 @@ mod tests {
             manifest: Manifest::default_template("test"),
             metadata: Metadata {
                 podcasts: vec![Podcast {
-                    id: None,
+                    id: Some("abc".into()),
                     title: "Short".into(),
                     file: "content/short.md".into(),
                     source_url: None,

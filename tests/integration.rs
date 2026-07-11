@@ -227,8 +227,7 @@ podcasts:
     );
 
     let tl = &timelines[0];
-    assert!(tl["slug"].as_str().unwrap().contains("timeline"));
-    assert_eq!(tl["title"], "Release 1 Timeline");
+    assert!(!tl["id"].as_str().unwrap().is_empty());
 
     let entries = tl["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 2);
@@ -266,7 +265,10 @@ podcasts:
     // Compare everything except the auto-generated UUID (which changes each run)
     let first_content = &first["podcasts"][0]["content"];
     let second_content = &second["podcasts"][0]["content"];
-    assert_eq!(first_content, second_content, "force rebuild content should match");
+    assert_eq!(
+        first_content, second_content,
+        "force rebuild content should match"
+    );
     assert_eq!(first["project"], second["project"]);
     assert_eq!(first["artist_id"], second["artist_id"]);
 }
@@ -424,14 +426,18 @@ podcasts:
     let bundle = h.read_bundle();
     assert_eq!(bundle["project"], "e2e");
     assert_eq!(bundle["podcasts"].as_array().unwrap().len(), 2);
-    assert!(bundle["podcasts"][0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("AI"));
-    assert!(bundle["podcasts"][1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("ML"));
+    assert!(
+        bundle["podcasts"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("AI")
+    );
+    assert!(
+        bundle["podcasts"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("ML")
+    );
 
     h.run_ok(&["clean"]);
     assert!(!h.project.join("build").exists());

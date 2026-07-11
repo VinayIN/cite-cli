@@ -20,7 +20,9 @@ pub fn init_project(name: &str, root: &Path) -> Result<InitReport, CiteError> {
 
     if !root.exists() {
         fs::create_dir_all(root)?;
-        report.directories_created.push(root.to_string_lossy().to_string());
+        report
+            .directories_created
+            .push(root.to_string_lossy().to_string());
     }
 
     for sub in ["content", "assets/audio", "assets/images", "build"] {
@@ -39,7 +41,9 @@ pub fn init_project(name: &str, root: &Path) -> Result<InitReport, CiteError> {
         fs::write(&manifest_path, toml_str)?;
         report.files_created.push("cite.toml".to_string());
     } else {
-        report.files_skipped.push("cite.toml (already exists)".to_string());
+        report
+            .files_skipped
+            .push("cite.toml (already exists)".to_string());
     }
 
     let meta_path = root.join("metadata.yml");
@@ -48,7 +52,9 @@ pub fn init_project(name: &str, root: &Path) -> Result<InitReport, CiteError> {
         fs::write(&meta_path, metadata_yaml)?;
         report.files_created.push("metadata.yml".to_string());
     } else {
-        report.files_skipped.push("metadata.yml (already exists)".to_string());
+        report
+            .files_skipped
+            .push("metadata.yml (already exists)".to_string());
     }
 
     let gitignore_path = root.join(".gitignore");
@@ -56,10 +62,10 @@ pub fn init_project(name: &str, root: &Path) -> Result<InitReport, CiteError> {
         fs::write(&gitignore_path, "build/\n.cite-cache.json\n")?;
         report.files_created.push(".gitignore".to_string());
     } else {
-        report.files_skipped.push(".gitignore (already exists)".to_string());
+        report
+            .files_skipped
+            .push(".gitignore (already exists)".to_string());
     }
 
     Ok(report)
 }
-
-

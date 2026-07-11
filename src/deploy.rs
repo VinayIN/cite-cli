@@ -1,7 +1,7 @@
 use crate::error::CiteError;
 use crate::project::ProjectContext;
 use colored::Colorize;
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::RequestBuilder;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -9,7 +9,6 @@ use std::env;
 use tracing::instrument;
 
 const STORAGE_BUCKET: &str = "assets";
-const DEFAULT_SUBSCRIPTION_PLAN_ID: i64 = 3;
 
 fn with_auth(builder: RequestBuilder, service_key: &str) -> RequestBuilder {
     builder
@@ -58,10 +57,7 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
             );
         }
         if let Some(artist_id) = bundle.get("artist_id").and_then(|v| v.as_str()) {
-            eprintln!(
-                "{}",
-                format!("  Artist ID: {artist_id}").cyan()
-            );
+            eprintln!("{}", format!("  Artist ID: {artist_id}").cyan());
         }
         return Ok(());
     }
@@ -101,13 +97,15 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
     let storage_path = format!("{project_slug}/{deployment_id}.json");
     let bundle_bytes = serde_json::to_vec_pretty(&bundle)?;
     let public_bundle_url = upload_bytes(
-        &client, base_url, &service_key, &storage_path, &bundle_bytes, "application/json",
+        &client,
+        base_url,
+        &service_key,
+        &storage_path,
+        &bundle_bytes,
+        "application/json",
     )
     .await?;
-    eprintln!(
-        "  Uploaded bundle to {}",
-        public_bundle_url.cyan()
-    );
+    eprintln!("  Uploaded bundle to {}", public_bundle_url.cyan());
 
     for pod in &podcasts {
         let title = pod["title"].as_str().unwrap_or("Untitled");
@@ -123,9 +121,7 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
 
         let url_id = if let Some(source_url) = pod.get("source_url").and_then(|v| v.as_str()) {
             if !source_url.is_empty() {
-                Some(
-                    resolve_url_id(&client, base_url, &service_key, source_url).await?,
-                )
+                Some(resolve_url_id(&client, base_url, &service_key, source_url).await?)
             } else {
                 None
             }
@@ -144,13 +140,21 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
                     .unwrap_or("bin");
                 let mime = mime_for_extension(ext);
                 match upload_bytes(
-                    &client, base_url, &service_key, &thumb_storage, &bytes, mime,
+                    &client,
+                    base_url,
+                    &service_key,
+                    &thumb_storage,
+                    &bytes,
+                    mime,
                 )
                 .await
                 {
                     Ok(url) => Some(url),
                     Err(e) => {
-                        eprintln!("  {} Failed to upload thumbnail: {e}", "warning:".yellow().bold());
+                        eprintln!(
+                            "  {} Failed to upload thumbnail: {e}",
+                            "warning:".yellow().bold()
+                        );
                         None
                     }
                 }
@@ -164,13 +168,13 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
         // Build news payload
         let mut news_payload = serde_json::Map::new();
         news_payload.insert("title".into(), Value::String(title.to_string()));
-        news_payload.insert("summary".into(), pod.get("content").cloned().unwrap_or(Value::Null));
+        news_payload.insert(
+            "summary".into(),
+            pod.get("content").cloned().unwrap_or(Value::Null),
+        );
         news_payload.insert("category_id".into(), Value::Number(category_id.into()));
         news_payload.insert("published_at".into(), Value::String(chrono_now_rfc3339()));
-        news_payload.insert(
-            "deployment_id".into(),
-            Value::String(deployment_id.clone()),
-        );
+        news_payload.insert("deployment_id".into(), Value::String(deployment_id.clone()));
         if let Some(url_id) = url_id {
             news_payload.insert("url_id".into(), Value::Number(url_id.into()));
         }
@@ -194,9 +198,9 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
         }
 
         let news_row: Value = news_response.json().await?;
-        let news_id = news_row["id"].as_i64().ok_or_else(|| {
-            CiteError::Deploy("Could not get news_id from response".to_string())
-        })?;
+        let news_id = news_row["id"]
+            .as_i64()
+            .ok_or_else(|| CiteError::Deploy("Could not get news_id from response".to_string()))?;
 
         // Auto-create artists_news junction
         let junction_payload = serde_json::json!({
@@ -221,7 +225,10 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
 
         // Upload audio if present
         if let Some(audio) = pod.get("audio").and_then(|v| v.as_str()) {
-            let local_audio = ctx.root.join("assets").join(audio.trim_start_matches("assets/"));
+            let local_audio = ctx
+                .root
+                .join("assets")
+                .join(audio.trim_start_matches("assets/"));
             if local_audio.exists() {
                 let audio_storage = format!("{project_slug}/audio/{pod_id}/{}", audio);
                 let bytes = tokio::fs::read(&local_audio).await?;
@@ -231,14 +238,18 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
                     .unwrap_or("bin");
                 let mime = mime_for_extension(ext);
                 match upload_bytes(
-                    &client, base_url, &service_key, &audio_storage, &bytes, mime,
+                    &client,
+                    base_url,
+                    &service_key,
+                    &audio_storage,
+                    &bytes,
+                    mime,
                 )
                 .await
                 {
                     Ok(podcast_url) => {
                         let pod_payload = serde_json::json!({
                             "news_id": news_id,
-                            "subscription_plan_id": DEFAULT_SUBSCRIPTION_PLAN_ID,
                             "title": format!("{} Podcast", title),
                             "podcast_url": podcast_url,
                             "deployment_id": deployment_id,
@@ -274,7 +285,12 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
         // Deploy timeline entries if this podcast has a citation
         if let Some(entries) = timeline_map.get(pod_id) {
             deploy_timeline_for_podcast(
-                &client, base_url, &service_key, &deployment_id, news_id, entries,
+                &client,
+                base_url,
+                &service_key,
+                &deployment_id,
+                news_id,
+                entries,
             )
             .await?;
         }
@@ -299,7 +315,10 @@ async fn deploy_timeline_for_podcast(
     entries: &[Value],
 ) -> Result<(), CiteError> {
     for entry in entries {
-        let tl_title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
+        let tl_title = entry
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Untitled");
         let tl_date = entry.get("date").and_then(|v| v.as_str()).unwrap_or("");
         let tl_summary = entry.get("summary").and_then(|v| v.as_str()).unwrap_or("");
         let description = format!("Date: {tl_date}\nSummary: {tl_summary}");
@@ -367,13 +386,11 @@ pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<(), C
 
     let tables = ["podcasts", "artists_news", "news"];
     for table in &tables {
-        let url = format!("{base_url}/rest/v1/{table}?deployment_id=eq.{}", encode_url(deployment_id));
-        let response = client
-            .delete(&url)
-            .header("apikey", &service_key)
-            .header("Authorization", format!("Bearer {service_key}"))
-            .send()
-            .await?;
+        let url = format!(
+            "{base_url}/rest/v1/{table}?deployment_id=eq.{}",
+            encode_url(deployment_id)
+        );
+        let response = with_auth(client.delete(&url), &service_key).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -418,9 +435,7 @@ async fn resolve_category_id(
         "{base_url}/rest/v1/categories?name=eq.{}",
         encode_url(category_name)
     );
-    let resp = with_auth(client.get(&url), service_key)
-        .send()
-        .await?;
+    let resp = with_auth(client.get(&url), service_key).send().await?;
 
     if resp.status().is_success() {
         let rows: Vec<Value> = resp.json().await?;
@@ -444,9 +459,7 @@ async fn resolve_url_id(
 ) -> Result<i64, CiteError> {
     let encoded = encode_url(source_url);
     let url = format!("{base_url}/rest/v1/urls?url=eq.{encoded}");
-    let resp = with_auth(client.get(&url), service_key)
-        .send()
-        .await?;
+    let resp = with_auth(client.get(&url), service_key).send().await?;
 
     if resp.status().is_success() {
         let rows: Vec<Value> = resp.json().await?;
@@ -490,9 +503,7 @@ async fn upload_bytes(
 ) -> Result<String, CiteError> {
     let url = format!("{base_url}/storage/v1/object/{STORAGE_BUCKET}/{storage_path}");
 
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {service_key}"))
+    let response = with_auth(client.post(&url), &service_key)
         .header("Content-Type", mime)
         .body(bytes.to_vec())
         .send()
@@ -506,8 +517,7 @@ async fn upload_bytes(
         )));
     }
 
-    let public_url =
-        format!("{base_url}/storage/v1/object/public/{STORAGE_BUCKET}/{storage_path}");
+    let public_url = format!("{base_url}/storage/v1/object/public/{STORAGE_BUCKET}/{storage_path}");
     Ok(public_url)
 }
 

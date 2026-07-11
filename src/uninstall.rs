@@ -38,9 +38,7 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
     std::fs::remove_file(&current_exe)?;
     eprintln!(
         "{}",
-        format!("Removed {}", current_exe.display())
-            .green()
-            .bold()
+        format!("Removed {}", current_exe.display()).green().bold()
     );
 
     if install_dir

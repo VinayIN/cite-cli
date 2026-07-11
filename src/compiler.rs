@@ -33,7 +33,10 @@ pub async fn build(ctx: &ProjectContext, force: bool) -> Result<ValidationReport
     cache.save(&cache_path).await?;
 
     let mut report = ValidationReport::new();
-    report.info(format!("Built {} podcast items", ctx.metadata.podcasts.len()));
+    report.info(format!(
+        "Built {} podcast items",
+        ctx.metadata.podcasts.len()
+    ));
     report.info(format!(
         "Build artifact at {}",
         build_dir.join("content.json").display()
@@ -57,7 +60,10 @@ async fn build_bundle(ctx: &ProjectContext) -> Result<ContentBundle, CiteError> 
         }
 
         if let Some(thumbnail) = &item.thumbnail {
-            item.thumbnail = Some(format!("assets/{}", thumbnail.trim_start_matches("assets/")));
+            item.thumbnail = Some(format!(
+                "assets/{}",
+                thumbnail.trim_start_matches("assets/")
+            ));
         }
 
         if let Some(audio) = &item.audio {
@@ -73,12 +79,8 @@ async fn build_bundle(ctx: &ProjectContext) -> Result<ContentBundle, CiteError> 
                     .unwrap_or_default();
                 let entries = parse_bibtex(&bib_content);
                 if !entries.is_empty() {
-                    let slug_str = format!("{}-timeline", item.id.as_deref().unwrap_or("unknown"));
-                    timelines.push(Timeline {
-                        slug: slug_str,
-                        title: format!("{} Timeline", item.title),
-                        entries,
-                    });
+                    let id = Uuid::new_v4().to_string();
+                    timelines.push(Timeline { id, entries });
                 }
             }
         }
@@ -144,14 +146,19 @@ fn parse_bibtex(content: &str) -> Vec<TimelineEntry> {
         let summary = extract_bib_field(body, "abstract")
             .or_else(|| extract_bib_field(body, "note"))
             .unwrap_or_default();
-
+        let url = extract_bib_field(body, "url")
+            .or_else(|| extract_bib_field(body, "doi"))
+            .unwrap_or_default();
         let date = format_bib_date(&year, &month);
         let entry_title = format_title(&title, &author);
+        let id = Uuid::new_v4().to_string();
 
         entries.push(TimelineEntry {
             date,
+            id,
             title: entry_title,
-            summary,
+            summary: Some(summary),
+            url: Some(url),
         });
     }
 
@@ -270,12 +277,14 @@ mod tests {
   year = {1935},
   month = may,
   abstract = {A description of physical reality},
+  doi = {10.1038/35057060},
 }
 "#;
         let entries = parse_bibtex(bib);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].date, "1935-05");
         assert!(entries[0].title.contains("Quantum-Mechanical"));
+        assert_eq!(entries[0].url.as_deref(), Some("10.1038/35057060"));
     }
 
     #[test]
@@ -324,7 +333,7 @@ mod tests {
             manifest,
             metadata: Metadata {
                 podcasts: vec![Podcast {
-                    id: None,
+                    id: Some("abc".into()),
                     title: "My Podcast".into(),
                     file: "content/article.md".into(),
                     source_url: None,
@@ -343,8 +352,10 @@ mod tests {
         let json_str = std::fs::read_to_string(ctx.build_dir().join("content.json")).unwrap();
         let bundle: ContentBundle = serde_json::from_str(&json_str).unwrap();
         assert_eq!(bundle.podcasts.len(), 1);
-        assert!(bundle.podcasts[0].id.is_some());
+        assert_eq!(bundle.podcasts[0].id.as_deref(), Some("abc"));
         assert_eq!(bundle.podcasts[0].content.as_deref(), Some("# Hello"));
+        assert!(bundle.podcasts[0].citation.is_none());
+        assert_eq!(bundle.podcasts[0].category.as_deref(), Some("tech"));
     }
 
     #[tokio::test]
