@@ -8,11 +8,11 @@ CLI tool for scaffolding, validating, building, and deploying podcast content to
 
 (MacOS/Linux only)
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha/cite-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.1/cite-cli-installer.sh | sh
 ```
 (Windows only)
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha/cite-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.1/cite-cli-installer.ps1 | iex"
 ```
 
 ### From source
