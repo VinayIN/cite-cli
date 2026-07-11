@@ -1,118 +1,40 @@
-use crate::slug::Slug;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Metadata {
     #[serde(default)]
-    pub artists: Vec<Artist>,
-    #[serde(default)]
-    pub news: Vec<News>,
-    #[serde(default)]
     pub podcasts: Vec<Podcast>,
 }
 
 impl Metadata {
-    pub fn all_slugs(&self) -> Vec<(&'static str, &Slug)> {
-        let mut slugs = Vec::new();
-        for a in &self.artists {
-            slugs.push(("artists", &a.slug));
-        }
-        for n in &self.news {
-            slugs.push(("news", &n.slug));
-        }
+    pub fn content_files(&self) -> Vec<String> {
+        let mut files = Vec::new();
         for p in &self.podcasts {
-            slugs.push(("podcasts", &p.slug));
+            files.push(p.file.clone());
+            if let Some(cit) = &p.citation {
+                files.push(cit.clone());
+            }
+            if let Some(audio) = &p.audio {
+                files.push(audio.clone());
+            }
         }
-        slugs
+        files
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Artist {
-    pub slug: Slug,
-    pub name: String,
-    pub email: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct News {
-    pub slug: Slug,
-    pub title: String,
-    pub file: String,
-    #[serde(default)]
-    pub citation: Option<String>,
-    pub category: Option<String>,
-    #[serde(default)]
-    pub artists: Vec<Slug>,
-    #[serde(default)]
-    pub podcasts: Vec<Slug>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Podcast {
-    pub slug: Slug,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub title: String,
     pub file: String,
-    pub duration_seconds: Option<u64>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::slug::Slug;
-
-    fn slug(s: &str) -> Slug {
-        Slug::new(s).unwrap()
-    }
-
-    #[test]
-    fn test_all_slugs_covers_all_types() {
-        let meta = Metadata {
-            artists: vec![Artist {
-                slug: slug("alice"),
-                name: "Alice".into(),
-                email: None,
-            }],
-            news: vec![News {
-                slug: slug("article-1"),
-                title: "A".into(),
-                file: "x.md".into(),
-                citation: None,
-                category: None,
-                artists: vec![],
-                podcasts: vec![],
-                content: None,
-            }],
-            podcasts: vec![Podcast {
-                slug: slug("pod-1"),
-                title: "P".into(),
-                file: "a.mp3".into(),
-                duration_seconds: None,
-            }],
-        };
-        let slugs = meta.all_slugs();
-        assert_eq!(slugs.len(), 3);
-        assert!(slugs.contains(&("artists", &slug("alice"))));
-        assert!(slugs.contains(&("news", &slug("article-1"))));
-        assert!(slugs.contains(&("podcasts", &slug("pod-1"))));
-    }
-
-    #[test]
-    fn test_yaml_roundtrip() {
-        let yaml = r#"
-artists:
-  - slug: alice
-    name: "Alice"
-news: []
-podcasts: []
-"#;
-        let meta: Metadata = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(meta.artists.len(), 1);
-        assert_eq!(meta.artists[0].slug.as_str(), "alice");
-        assert_eq!(meta.artists[0].name, "Alice");
-    }
+    pub source_url: Option<String>,
+    pub category: Option<String>,
+    pub thumbnail: Option<String>,
+    pub audio: Option<String>,
+    pub citation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,19 +46,63 @@ pub struct TimelineEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Timeline {
-    pub slug: Slug,
+    pub slug: String,
     pub title: String,
     pub entries: Vec<TimelineEntry>,
 }
 
-/// A flat, deployable content bundle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentBundle {
     pub compiler_version: String,
     pub project: String,
-    pub artists: Vec<Artist>,
-    pub news: Vec<News>,
+    pub artist_id: String,
     pub podcasts: Vec<Podcast>,
     #[serde(default)]
     pub timelines: Vec<Timeline>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_yaml_parse() {
+        let yaml = r#"
+podcasts:
+  - title: "Test Podcast"
+    file: content/test.md
+    source_url: "https://example.com"
+    category: "tech"
+"#;
+        let meta: Metadata = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(meta.podcasts.len(), 1);
+        assert_eq!(meta.podcasts[0].title, "Test Podcast");
+        assert_eq!(meta.podcasts[0].file, "content/test.md");
+        assert_eq!(
+            meta.podcasts[0].source_url.as_deref(),
+            Some("https://example.com")
+        );
+    }
+
+    #[test]
+    fn test_content_files_includes_all() {
+        let meta = Metadata {
+            podcasts: vec![Podcast {
+                id: None,
+                title: "P".into(),
+                file: "content/p.md".into(),
+                source_url: None,
+                category: None,
+                thumbnail: None,
+                audio: Some("assets/audio/p.mp3".into()),
+                citation: Some("content/p.bib".into()),
+                content: None,
+            }],
+        };
+        let files = meta.content_files();
+        assert_eq!(files.len(), 3);
+        assert!(files.contains(&"content/p.md".to_string()));
+        assert!(files.contains(&"content/p.bib".to_string()));
+        assert!(files.contains(&"assets/audio/p.mp3".to_string()));
+    }
 }

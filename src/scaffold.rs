@@ -44,7 +44,7 @@ pub fn init_project(name: &str, root: &Path) -> Result<InitReport, CiteError> {
 
     let meta_path = root.join("metadata.yml");
     if !meta_path.exists() {
-        let metadata_yaml = "artists: []\nnews: []\npodcasts: []\n";
+        let metadata_yaml = "podcasts: []\n";
         fs::write(&meta_path, metadata_yaml)?;
         report.files_created.push("metadata.yml".to_string());
     } else {
@@ -62,15 +62,4 @@ pub fn init_project(name: &str, root: &Path) -> Result<InitReport, CiteError> {
     Ok(report)
 }
 
-#[instrument(skip(root))]
-pub fn clean_project(root: &Path) -> Result<(), CiteError> {
-    let build_dir = root.join("build");
-    if build_dir.exists() {
-        fs::remove_dir_all(&build_dir)?;
-    }
-    let cache = root.join(".cite-cache.json");
-    if cache.exists() {
-        fs::remove_file(&cache)?;
-    }
-    Ok(())
-}
+

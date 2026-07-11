@@ -22,6 +22,8 @@ pub struct ProjectConfig {
     pub default_language: String,
     #[serde(default = "default_metadata_file")]
     pub metadata_file: String,
+    #[serde(default)]
+    pub artist_id: String,
 }
 
 fn default_language() -> String {
@@ -42,7 +44,7 @@ pub struct BuildConfig {
 }
 
 fn default_compiler_version() -> String {
-    "0".into()
+    "1".into()
 }
 fn default_incremental() -> bool {
     true
@@ -132,6 +134,7 @@ impl Manifest {
                 version: "0.1.0".to_string(),
                 default_language: default_language(),
                 metadata_file: default_metadata_file(),
+                artist_id: String::new(),
             },
             build: BuildConfig::default(),
             backend: None,
@@ -153,10 +156,11 @@ mod tests {
         assert_eq!(m.project.version, "0.1.0");
         assert_eq!(m.project.default_language, "en");
         assert_eq!(m.project.metadata_file, "metadata.yml");
-        assert_eq!(m.build.compiler_version, "0");
+        assert_eq!(m.build.compiler_version, "1");
         assert!(m.build.incremental);
         assert!(m.backend.is_none());
         assert!(m.validation.strict);
+        assert!(m.project.artist_id.is_empty());
     }
 
     #[test]
@@ -165,6 +169,7 @@ mod tests {
 [project]
 name = "test"
 version = "1.0.0"
+artist_id = "11111111-1111-1111-1111-111111111111"
 
 [build]
 compiler_version = "1"
@@ -191,5 +196,6 @@ image_formats = ["jpg"]
             "https://example.com"
         );
         assert_eq!(m.assets.audio_formats, vec!["mp3"]);
+        assert_eq!(m.project.artist_id, "11111111-1111-1111-1111-111111111111");
     }
 }

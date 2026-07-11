@@ -111,12 +111,16 @@ fn is_newer(a: &str, b: &str) -> bool {
     parse_version(a) > parse_version(b)
 }
 
-fn parse_version(v: &str) -> (u64, u64, u64) {
-    let parts: Vec<&str> = v.splitn(3, '.').collect();
+fn parse_version(v: &str) -> (u64, u64, u64, u64) {
+    // Strip pre-release suffix (e.g. "0.1.0-alpha" -> "0.1.0")
+    let clean = v.split_once('-').map(|(base, _)| base).unwrap_or(v);
+    let parts: Vec<&str> = clean.splitn(3, '.').collect();
     (
         parts.first().and_then(|s| s.parse().ok()).unwrap_or(0),
         parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
         parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0),
+        // Pre-release weight: release = 0, pre-release = 1
+        if v.contains('-') { 1 } else { 0 },
     )
 }
 
@@ -126,10 +130,12 @@ mod tests {
 
     #[test]
     fn test_parse_version() {
-        assert_eq!(parse_version("0.1.0"), (0, 1, 0));
-        assert_eq!(parse_version("1.0.0"), (1, 0, 0));
-        assert_eq!(parse_version("0.0.1"), (0, 0, 1));
-        assert_eq!(parse_version("2.5.3"), (2, 5, 3));
+        assert_eq!(parse_version("0.1.0"), (0, 1, 0, 0));
+        assert_eq!(parse_version("1.0.0"), (1, 0, 0, 0));
+        assert_eq!(parse_version("0.0.1"), (0, 0, 1, 0));
+        assert_eq!(parse_version("2.5.3"), (2, 5, 3, 0));
+        assert_eq!(parse_version("0.1.0-alpha"), (0, 1, 0, 1));
+        assert_eq!(parse_version("0.1.0-rc.1"), (0, 1, 0, 1));
     }
 
     #[test]
@@ -139,6 +145,8 @@ mod tests {
         assert!(is_newer("0.1.1", "0.1.0"));
         assert!(!is_newer("0.1.0", "0.1.0"));
         assert!(!is_newer("0.1.0", "1.0.0"));
+        assert!(!is_newer("0.1.0", "0.1.0-alpha"));
+        assert!(is_newer("0.1.0-alpha", "0.0.9"));
     }
 
     #[test]

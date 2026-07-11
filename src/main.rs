@@ -7,7 +7,6 @@ mod manifest;
 mod metadata;
 mod project;
 mod scaffold;
-mod slug;
 mod uninstall;
 mod upgrade;
 mod validation;
