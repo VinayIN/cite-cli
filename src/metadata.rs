@@ -136,11 +136,6 @@ impl Metadata {
         }
         files
     }
-    pub fn default_template() -> Self {
-        Self {
-            podcasts: vec![Podcast::default()],
-        }
-    }
 }
 
 #[cfg(test)]

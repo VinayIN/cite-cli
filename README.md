@@ -48,7 +48,7 @@ cargo test
 | `init <name>` | Scaffold a new project |
 | `validate` | Check structure, metadata, file existence |
 | `lint` | Word counts and content quality checks |
-| `build` | Incremental build -> `build/<deployment id>.json` |
+| `build` | Incremental build -> `build/content.json` |
 | `deploy` | Deploy to Supabase (full JSON to storage + table subset) |
 | `status` | Project health overview |
 | `doctor` | Diagnose config and structure issues |

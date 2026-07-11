@@ -89,6 +89,12 @@ pub struct BackendConfig {
     pub staging_url: String,
     #[serde(default)]
     pub staging_service_key: String,
+    #[serde(default = "get_subscription_plan")]
+    pub subscription_plan: String,
+}
+
+fn get_subscription_plan() -> String {
+    "Basic".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -112,14 +112,12 @@ fn is_newer(a: &str, b: &str) -> bool {
 }
 
 fn parse_version(v: &str) -> (u64, u64, u64, u64) {
-    // Strip pre-release suffix (e.g. "0.1.0-alpha" -> "0.1.0")
     let clean = v.split_once('-').map(|(base, _)| base).unwrap_or(v);
     let parts: Vec<&str> = clean.splitn(3, '.').collect();
     (
         parts.first().and_then(|s| s.parse().ok()).unwrap_or(0),
         parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
         parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0),
-        // Pre-release weight: release = 0, pre-release = 1
         if v.contains('-') { 1 } else { 0 },
     )
 }

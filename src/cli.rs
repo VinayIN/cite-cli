@@ -10,7 +10,7 @@ use crate::{compiler, deploy, project, scaffold, uninstall, upgrade, validation}
 #[command(
     name = "cite-cli",
     version,
-    about = "Manage news content projects from scaffolding through deployment"
+    about = "Manage and enrich your podcast projects from scaffolding through deployment"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -299,6 +299,10 @@ impl Command {
                     eprintln!("  Name: {}", ctx.manifest.project.name);
                     eprintln!("  Project Root: {}", ctx.root.display());
                     eprintln!("  Artist ID: {}", ctx.manifest.project.artist_id);
+                    if let Some(backend) = &ctx.manifest.backend {
+                        eprintln!("  Active subscription: {}", backend.subscription_plan);
+                        eprintln!("  Publishing to: {}", backend.staging_url);
+                    }
                     eprintln!("  Podcasts: {}", ctx.metadata.podcasts.len());
                     let build_path = ctx.build_dir().join("content.json");
                     if build_path.exists() {

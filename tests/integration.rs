@@ -181,7 +181,7 @@ podcasts:
     assert_eq!(bundle["artist_id"], "alice_uuid");
     assert_eq!(bundle["podcasts"].as_array().unwrap().len(), 1);
     let pod = &bundle["podcasts"][0];
-    assert!(pod["id"].as_str().unwrap().len() > 0);
+    assert!(!pod["id"].as_str().unwrap().is_empty());
     assert_eq!(pod["title"], "My Podcast");
     assert_eq!(pod["content"], "# Hello World");
 }
