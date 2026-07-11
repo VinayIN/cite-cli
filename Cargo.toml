@@ -18,14 +18,15 @@ tokio = { version = "1.44", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"], default-features = false }
 sha2 = "0.10"
 percent-encoding = "2.3"
-uuid = { version = "1.23.4", features = ["v4"] }
+uuid = { version = "1.23", features = ["v4"] }
 colored = "3.0"
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+regex = "1.13.0"
 
 [dev-dependencies]
-tempfile = "3.19"                                              # Latest 3.x
+tempfile = "3.19"
 
 [[bin]]
 name = "cite-cli"

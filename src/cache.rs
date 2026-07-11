@@ -8,14 +8,14 @@ use tracing::instrument;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildCache {
-    pub compiler_version: String,
+    pub compiler_version: f64,
     pub hashes: HashMap<String, String>,
 }
 
 impl BuildCache {
-    pub fn new(compiler_version: &str, hashes: HashMap<String, String>) -> Self {
+    pub fn new(compiler_version: f64, hashes: HashMap<String, String>) -> Self {
         Self {
-            compiler_version: compiler_version.to_string(),
+            compiler_version,
             hashes,
         }
     }
@@ -24,12 +24,12 @@ impl BuildCache {
         if path.exists() {
             let data = tokio::fs::read_to_string(path).await?;
             Ok(serde_json::from_str(&data).unwrap_or_else(|_| BuildCache {
-                compiler_version: String::new(),
+                compiler_version: 0.0,
                 hashes: HashMap::new(),
             }))
         } else {
             Ok(BuildCache {
-                compiler_version: String::new(),
+                compiler_version: 0.0,
                 hashes: HashMap::new(),
             })
         }
@@ -66,7 +66,7 @@ pub async fn hash_files(files: &[impl AsRef<Path>]) -> Result<HashMap<String, St
     let mut hashes = HashMap::new();
     for file in files {
         let path = file.as_ref();
-        if path.exists() {
+        if path.exists() && path.is_file() {
             let mut f = tokio::fs::File::open(path).await?;
             let mut buf = Vec::new();
             f.read_to_end(&mut buf).await?;
@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn test_changed_since_new_file() {
-        let cache = BuildCache::new("0", HashMap::new());
+        let cache = BuildCache::new(0.0, HashMap::new());
         let mut current = HashMap::new();
         current.insert("a.md".into(), "abc".into());
         let changed = cache.changed_since(&current);
@@ -97,7 +97,7 @@ mod tests {
     fn test_changed_since_unchanged() {
         let mut hashes = HashMap::new();
         hashes.insert("a.md".into(), "abc".into());
-        let cache = BuildCache::new("0", hashes);
+        let cache = BuildCache::new(0.0, hashes);
         let mut current = HashMap::new();
         current.insert("a.md".into(), "abc".into());
         let changed = cache.changed_since(&current);
@@ -108,7 +108,7 @@ mod tests {
     fn test_changed_since_modified() {
         let mut hashes = HashMap::new();
         hashes.insert("a.md".into(), "abc".into());
-        let cache = BuildCache::new("0", hashes);
+        let cache = BuildCache::new(0.0, hashes);
         let mut current = HashMap::new();
         current.insert("a.md".into(), "def".into());
         let changed = cache.changed_since(&current);

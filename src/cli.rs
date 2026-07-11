@@ -246,7 +246,7 @@ impl Command {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
                     }
-                    match compiler::build(ctx, force).await {
+                    match compiler::compile(ctx, force).await {
                         Ok(report) => report.print(),
                         Err(e) => {
                             eprintln!("{}", styled(format!("Build failed: {e}"), Style::Error));
@@ -297,8 +297,7 @@ impl Command {
                         eprintln!("{}", styled("Project Status", Style::Header));
                     }
                     eprintln!("  Name: {}", ctx.manifest.project.name);
-                    eprintln!("  Version: {}", ctx.manifest.project.version);
-                    eprintln!("  Root: {}", ctx.root.display());
+                    eprintln!("  Project Root: {}", ctx.root.display());
                     eprintln!("  Artist ID: {}", ctx.manifest.project.artist_id);
                     eprintln!("  Podcasts: {}", ctx.metadata.podcasts.len());
                     let build_path = ctx.build_dir().join("content.json");
@@ -344,6 +343,8 @@ impl Command {
                         let d = ctx.root.join(dir);
                         if d.is_dir() {
                             eprintln!("{}", styled(format!("{dir}/ exists"), Style::Success));
+                        } else if *dir == "build" {
+                            eprintln!("  {dir}/ missing (created by build)");
                         } else {
                             eprintln!("  {dir}/ missing (will be created on init)");
                         }

@@ -1,4 +1,120 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Podcast {
+    #[serde(default = "get_uuid")]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub file: String,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub thumbnail: Option<String>,
+    #[serde(default)]
+    pub audio: Option<String>,
+    #[serde(default)]
+    pub citation: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+}
+
+fn get_uuid() -> String {
+    Uuid::new_v4().to_string()
+}
+
+impl Default for Podcast {
+    fn default() -> Self {
+        Self {
+            id: get_uuid(),
+            title: String::new(),
+            file: String::new(),
+            source_url: None,
+            category: None,
+            thumbnail: None,
+            audio: None,
+            citation: None,
+            content: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineEntry {
+    #[serde(default)]
+    pub date: String,
+    #[serde(default = "get_uuid")]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+impl Default for TimelineEntry {
+    fn default() -> Self {
+        Self {
+            date: String::new(),
+            id: Uuid::new_v4().to_string(),
+            title: String::new(),
+            summary: None,
+            url: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Timeline {
+    #[serde(default = "get_uuid")]
+    pub id: String,
+    #[serde(default)]
+    pub entries: Vec<TimelineEntry>,
+}
+
+impl Default for Timeline {
+    fn default() -> Self {
+        Self {
+            id: get_uuid(),
+            entries: vec![TimelineEntry::default()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContentBundle {
+    #[serde(default = "get_compiler_version")]
+    pub compiler_version: f64,
+    #[serde(default)]
+    pub project: String,
+    #[serde(default = "get_uuid")]
+    pub artist_id: String,
+    #[serde(default)]
+    pub podcasts: Vec<Podcast>,
+    #[serde(default)]
+    pub timelines: Vec<Timeline>,
+}
+
+fn get_compiler_version() -> f64 {
+    0.0
+}
+
+impl Default for ContentBundle {
+    fn default() -> Self {
+        Self {
+            compiler_version: get_compiler_version(),
+            project: String::new(),
+            artist_id: get_uuid(),
+            podcasts: vec![Podcast::default()],
+            timelines: vec![Timeline::default()],
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Metadata {
@@ -20,50 +136,16 @@ impl Metadata {
         }
         files
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Podcast {
-    pub id: Option<String>,
-    pub title: String,
-    pub file: String,
-    pub source_url: Option<String>,
-    pub category: Option<String>,
-    pub thumbnail: Option<String>,
-    pub audio: Option<String>,
-    pub citation: Option<String>,
-    pub content: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TimelineEntry {
-    pub date: String,
-    pub id: String,
-    pub title: String,
-    pub summary: Option<String>,
-    pub url: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Timeline {
-    pub id: String,
-    pub entries: Vec<TimelineEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContentBundle {
-    pub compiler_version: String,
-    pub project: String,
-    pub artist_id: String,
-    pub podcasts: Vec<Podcast>,
-    #[serde(default)]
-    pub timelines: Vec<Timeline>,
+    pub fn default_template() -> Self {
+        Self {
+            podcasts: vec![Podcast::default()],
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
 
     #[test]
     fn test_yaml_parse() {
@@ -77,7 +159,7 @@ podcasts:
 "#;
         let meta: Metadata = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(meta.podcasts.len(), 1);
-        assert_eq!(meta.podcasts[0].id.as_deref(), Some("abc"));
+        assert_eq!(meta.podcasts[0].id, "abc");
         assert_eq!(meta.podcasts[0].title, "Test Podcast");
         assert_eq!(meta.podcasts[0].file, "content/test.md");
         assert_eq!(
@@ -88,10 +170,10 @@ podcasts:
 
     #[test]
     fn test_content_files_includes_all() {
-        let id = Uuid::new_v4().to_string();
+        let id = get_uuid();
         let meta = Metadata {
             podcasts: vec![Podcast {
-                id: Some(id.clone()),
+                id: id.clone(),
                 title: "P".into(),
                 file: "content/p.md".into(),
                 source_url: None,
@@ -102,7 +184,7 @@ podcasts:
                 content: None,
             }],
         };
-        assert_eq!(meta.podcasts[0].id, Some(id));
+        assert_eq!(meta.podcasts[0].id, id.clone());
 
         let files = meta.content_files();
         assert_eq!(files.len(), 3);

@@ -6,7 +6,7 @@ use tracing::instrument;
 use uuid::Uuid;
 
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name, force))]
-pub async fn build(ctx: &ProjectContext, force: bool) -> Result<ValidationReport, CiteError> {
+pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<ValidationReport, CiteError> {
     let cache_path = ctx.cache_path();
     let content_files = ctx.content_files();
 
@@ -29,7 +29,7 @@ pub async fn build(ctx: &ProjectContext, force: bool) -> Result<ValidationReport
     let json = serde_json::to_string_pretty(&bundle)?;
     tokio::fs::write(build_dir.join("content.json"), json).await?;
 
-    let cache = BuildCache::new(&ctx.manifest.build.compiler_version, current_hashes);
+    let cache = BuildCache::new(ctx.manifest.build.compiler_version, current_hashes);
     cache.save(&cache_path).await?;
 
     let mut report = ValidationReport::new();
@@ -49,14 +49,12 @@ async fn build_bundle(ctx: &ProjectContext) -> Result<ContentBundle, CiteError> 
     let mut timelines = Vec::new();
 
     for item in &mut podcasts {
-        if item.id.is_none() {
-            item.id = Some(Uuid::new_v4().to_string());
-        }
-
-        let src = ctx.root.join(&item.file);
-        if src.exists() {
-            let raw = tokio::fs::read_to_string(&src).await.unwrap_or_default();
-            item.content = Some(raw);
+        if !item.file.is_empty() {
+            let src = ctx.root.join(&item.file);
+            if src.exists() && src.is_file() {
+                let raw = tokio::fs::read_to_string(&src).await.unwrap_or_default();
+                item.content = Some(raw);
+            }
         }
 
         if let Some(thumbnail) = &item.thumbnail {
@@ -89,7 +87,7 @@ async fn build_bundle(ctx: &ProjectContext) -> Result<ContentBundle, CiteError> 
     let artist_id = ctx.manifest.project.artist_id.clone();
 
     Ok(ContentBundle {
-        compiler_version: ctx.manifest.build.compiler_version.clone(),
+        compiler_version: ctx.manifest.build.compiler_version,
         project: ctx.manifest.project.name.clone(),
         artist_id,
         podcasts,
@@ -315,7 +313,7 @@ mod tests {
             manifest: Manifest::default_template("test"),
             metadata: Metadata::default(),
         };
-        let report = build(&ctx, false).await.unwrap();
+        let report = compile(&ctx, false).await.unwrap();
         assert!(!report.has_errors());
     }
 
@@ -333,7 +331,7 @@ mod tests {
             manifest,
             metadata: Metadata {
                 podcasts: vec![Podcast {
-                    id: Some("abc".into()),
+                    id: "abc".into(),
                     title: "My Podcast".into(),
                     file: "content/article.md".into(),
                     source_url: None,
@@ -345,14 +343,14 @@ mod tests {
                 }],
             },
         };
-        let report = build(&ctx, false).await.unwrap();
+        let report = compile(&ctx, false).await.unwrap();
         assert!(!report.has_errors());
         assert!(ctx.build_dir().join("content.json").exists());
 
         let json_str = std::fs::read_to_string(ctx.build_dir().join("content.json")).unwrap();
         let bundle: ContentBundle = serde_json::from_str(&json_str).unwrap();
         assert_eq!(bundle.podcasts.len(), 1);
-        assert_eq!(bundle.podcasts[0].id.as_deref(), Some("abc"));
+        assert_eq!(bundle.podcasts[0].id, "abc");
         assert_eq!(bundle.podcasts[0].content.as_deref(), Some("# Hello"));
         assert!(bundle.podcasts[0].citation.is_none());
         assert_eq!(bundle.podcasts[0].category.as_deref(), Some("tech"));
@@ -366,14 +364,14 @@ mod tests {
             manifest: Manifest::default_template("test"),
             metadata: Metadata::default(),
         };
-        let r1 = build(&ctx, false).await.unwrap();
+        let r1 = compile(&ctx, false).await.unwrap();
         assert!(!r1.has_errors());
 
-        let r2 = build(&ctx, false).await.unwrap();
+        let r2 = compile(&ctx, false).await.unwrap();
         assert!(!r2.has_errors());
         assert!(r2.infos.is_empty());
 
-        let r3 = build(&ctx, true).await.unwrap();
+        let r3 = compile(&ctx, true).await.unwrap();
         assert!(!r3.has_errors());
         assert!(!r3.infos.is_empty());
     }

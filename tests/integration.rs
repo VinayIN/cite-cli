@@ -1,3 +1,4 @@
+use regex::Regex;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -87,7 +88,7 @@ fn init_creates_project_structure() {
     assert!(h.project.join("content").is_dir(), "content/");
     assert!(h.project.join("assets/audio").is_dir(), "assets/audio/");
     assert!(h.project.join("assets/images").is_dir(), "assets/images/");
-    assert!(h.project.join("build").is_dir(), "build/");
+    assert!(!h.project.join("build").exists());
     assert!(h.project.join(".gitignore").exists(), ".gitignore");
 }
 
@@ -168,15 +169,16 @@ podcasts:
 
     // Set artist_id in cite.toml
     let mut toml = fs::read_to_string(h.project.join("cite.toml")).unwrap();
-    toml = toml.replace("artist_id = \"\"", "artist_id = \"alice-uuid\"");
+    let re = Regex::new(r#"(?m)^(artist_id\s*=\s*)"[^"]*""#).unwrap();
+    toml = re.replace(&toml, r#"$1"alice_uuid""#).to_string();
     fs::write(h.project.join("cite.toml"), toml).unwrap();
-
     h.run_ok(&["build"]);
 
     let bundle = h.read_bundle();
+    assert!(h.project.join("build").exists());
     assert_eq!(bundle["project"], "build-test");
-    assert_eq!(bundle["compiler_version"], "1");
-    assert_eq!(bundle["artist_id"], "alice-uuid");
+    assert_eq!(bundle["compiler_version"], 1.0);
+    assert_eq!(bundle["artist_id"], "alice_uuid");
     assert_eq!(bundle["podcasts"].as_array().unwrap().len(), 1);
     let pod = &bundle["podcasts"][0];
     assert!(pod["id"].as_str().unwrap().len() > 0);
@@ -379,10 +381,11 @@ fn deploy_fails_without_build() {
     let h = ProjectHarness::new("no-build");
     fs::write(
         h.project.join("cite.toml"),
-        "[project]\nname = \"no-build\"\nversion = \"0.1.0\"\n\n[build]\ncompiler_version = \"0\"\nincremental = true\noutput_format = \"json\"\n\n[backend]\nstaging_url = \"https://test.supabase.co\"\nstaging_service_key = \"test-key\"\n",
+        "[project]\nname = \"no-build\"\nversion = \"0.1.0\"\nlanguage = \"en\"\nmetadata_file = \"metadata.yml\"\nartist_id = \"\"\n\n[build]\ncompiler_version = 0.0\nincremental = true\noutput_format = \"json\"\n\n[backend]\nstaging_url = \"https://test.supabase.co\"\nstaging_service_key = \"test-key\"\n",
     ).unwrap();
     let (_, stderr, ok) = h.run(&["deploy"]);
     assert!(!ok);
+    eprintln!("DEBUG stderr: {}", stderr);
     assert!(stderr.contains("No build artifact"));
 }
 
