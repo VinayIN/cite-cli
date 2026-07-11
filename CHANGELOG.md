@@ -1,6 +1,6 @@
 # changelog
 
-## unreleased
+## Unreleased
 - scaffold changed to make it more modular
 - expanded test coverage
 - deployment script updated to perform based on artist and a subscription

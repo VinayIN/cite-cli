@@ -19,7 +19,7 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
 
     if !force {
         eprintln!();
-        eprintln!("This will delete the binary. Shell config files will NOT be modified.");
+        eprintln!("This will delete the binary. Shell config files might NOT be modified.");
         eprintln!();
         eprint!("Are you sure? [y/N] ");
         std::io::stdout().flush()?;
