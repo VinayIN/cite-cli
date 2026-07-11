@@ -73,13 +73,13 @@ impl ValidationReport {
 
     pub fn print(&self) {
         for e in &self.errors {
-            eprintln!("{}", format!("  ✖ {}", e).red().bold());
+            eprintln!("{}", format!("  {}", e).red().bold());
         }
         for w in &self.warnings {
-            eprintln!("{}", format!("  ⚠ {}", w).yellow().bold());
+            eprintln!("{}", format!("  {}", w).yellow().bold());
         }
         for i in &self.infos {
-            eprintln!("{}", format!("  ℹ {}", i).cyan());
+            eprintln!("{}", format!("  {}", i).cyan());
         }
 
         let summary = format!(

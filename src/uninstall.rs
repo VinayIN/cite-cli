@@ -29,7 +29,7 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
         match input.trim().to_lowercase().as_str() {
             "y" | "yes" => {}
             _ => {
-                eprintln!("{}", "✖ Uninstall cancelled".red().bold());
+                eprintln!("{}", "Uninstall cancelled".red().bold());
                 return Ok(());
             }
         }
@@ -38,9 +38,7 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
     std::fs::remove_file(&current_exe)?;
     eprintln!(
         "{}",
-        format!("✔ Removed {}", current_exe.display())
-            .green()
-            .bold()
+        format!("Removed {}", current_exe.display()).green().bold()
     );
 
     if install_dir
@@ -51,7 +49,7 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
         let _ = std::fs::remove_dir(install_dir);
         eprintln!(
             "{}",
-            format!("✔ Removed empty directory {}", install_dir.display())
+            format!("Removed empty directory {}", install_dir.display())
                 .green()
                 .bold()
         );
@@ -76,7 +74,7 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
         eprintln!();
         eprintln!(
             "{}",
-            "ℹ Shell config files contain PATH references to the install directory.".cyan()
+            "Shell config files contain PATH references to the install directory.".cyan()
         );
         eprintln!(
             "  Edit your shell config (~/.zshrc, ~/.bashrc, etc.) and remove lines containing:"
@@ -86,6 +84,6 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
     }
 
     eprintln!();
-    eprintln!("{}", "✔ cite-cli has been uninstalled.".green().bold());
+    eprintln!("{}", "cite-cli has been uninstalled.".green().bold());
     Ok(())
 }

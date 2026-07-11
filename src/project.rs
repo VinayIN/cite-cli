@@ -52,41 +52,23 @@ impl ProjectContext {
     }
 
     pub fn content_files(&self) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        for news_item in &self.metadata.news {
-            files.push(self.root.join(&news_item.file));
-            if let Some(cit) = &news_item.citation {
-                files.push(self.root.join(cit));
-            }
-        }
-        for pod in &self.metadata.podcasts {
-            files.push(self.root.join(&pod.file));
-        }
-        for nl in &self.metadata.newsletters {
-            if let Some(f) = &nl.file {
-                files.push(self.root.join(f));
-            }
-        }
-        files
+        self.metadata
+            .content_files()
+            .iter()
+            .map(|f| self.root.join(f))
+            .collect()
     }
-}
 
-impl Metadata {
-    pub fn all_slugs(&self) -> Vec<(&'static str, &crate::slug::Slug)> {
-        let mut slugs = Vec::new();
-        for a in &self.artists {
-            slugs.push(("artists", &a.slug));
+    pub fn clean(&self) -> Result<(), CiteError> {
+        let build_dir = self.build_dir();
+        if build_dir.exists() {
+            std::fs::remove_dir_all(&build_dir)?;
         }
-        for n in &self.news {
-            slugs.push(("news", &n.slug));
+        let cache = self.cache_path();
+        if cache.exists() {
+            std::fs::remove_file(&cache)?;
         }
-        for p in &self.podcasts {
-            slugs.push(("podcasts", &p.slug));
-        }
-        for n in &self.newsletters {
-            slugs.push(("newsletters", &n.slug));
-        }
-        slugs
+        Ok(())
     }
 }
 
@@ -94,13 +76,7 @@ impl Metadata {
 mod tests {
     use super::*;
     use crate::manifest::Manifest;
-    use crate::metadata::{News, Newsletter, Podcast};
-    use crate::slug::Slug;
     use std::path::PathBuf;
-
-    fn slug(s: &str) -> Slug {
-        Slug::new(s).unwrap()
-    }
 
     #[test]
     fn test_content_files_collects_all_references() {
@@ -108,39 +84,24 @@ mod tests {
             root: PathBuf::from("/root"),
             manifest: Manifest::default_template("test"),
             metadata: Metadata {
-                news: vec![News {
-                    slug: slug("a"),
-                    title: "A".into(),
-                    file: "content/a.md".into(),
-                    citation: Some("content/a.bib".into()),
+                podcasts: vec![crate::metadata::Podcast {
+                    id: "abc".into(),
+                    title: "P".into(),
+                    file: "content/p.md".into(),
+                    source_url: None,
                     category: None,
-                    artists: vec![],
-                    podcasts: vec![],
+                    thumbnail: None,
+                    audio: Some("assets/audio/p.mp3".into()),
+                    citation: Some("content/p.bib".into()),
                     content: None,
                 }],
-                podcasts: vec![Podcast {
-                    slug: slug("p"),
-                    title: "P".into(),
-                    file: "assets/audio/p.mp3".into(),
-                    duration_seconds: None,
-                }],
-                newsletters: vec![Newsletter {
-                    slug: slug("n"),
-                    title: "N".into(),
-                    issue_number: None,
-                    published_date: None,
-                    included_news: vec![],
-                    file: Some("content/n.md".into()),
-                }],
-                ..Default::default()
             },
         };
 
         let files = ctx.content_files();
-        assert_eq!(files.len(), 4);
-        assert!(files.contains(&PathBuf::from("/root/content/a.md")));
-        assert!(files.contains(&PathBuf::from("/root/content/a.bib")));
+        assert_eq!(files.len(), 3);
+        assert!(files.contains(&PathBuf::from("/root/content/p.md")));
+        assert!(files.contains(&PathBuf::from("/root/content/p.bib")));
         assert!(files.contains(&PathBuf::from("/root/assets/audio/p.mp3")));
-        assert!(files.contains(&PathBuf::from("/root/content/n.md")));
     }
 }

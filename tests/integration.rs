@@ -1,3 +1,4 @@
+use regex::Regex;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -87,17 +88,18 @@ fn init_creates_project_structure() {
     assert!(h.project.join("content").is_dir(), "content/");
     assert!(h.project.join("assets/audio").is_dir(), "assets/audio/");
     assert!(h.project.join("assets/images").is_dir(), "assets/images/");
-    assert!(h.project.join("build").is_dir(), "build/");
+    assert!(!h.project.join("build").exists());
     assert!(h.project.join(".gitignore").exists(), ".gitignore");
 }
 
 #[test]
-fn init_fails_on_existing_nonempty() {
+fn init_is_idempotent_on_existing_project() {
     let h = ProjectHarness::new("existing");
     let (_, stderr, ok) =
         ProjectHarness::output(&["init", "--path", h.project.to_str().unwrap(), "existing"]);
-    assert!(!ok);
-    assert!(stderr.contains("not empty"));
+    assert!(ok);
+    assert!(stderr.contains("ready"));
+    assert!(stderr.contains("skipped"));
 }
 
 // ── validate ────────────────────────────────────────────────────
@@ -113,39 +115,14 @@ fn validate_catches_missing_file() {
     let h = ProjectHarness::new("missing-file");
     h.write_metadata(
         r#"
-artists: []
-news:
-  - slug: broken
-    title: "Broken"
+podcasts:
+  - title: "Broken"
     file: content/nonexistent.md
-podcasts: []
-newsletters: []
 "#,
     );
     let (_, stderr, ok) = h.run(&["validate"]);
     assert!(!ok);
     assert!(stderr.contains("does not exist"));
-}
-
-#[test]
-fn validate_catches_bad_cross_ref() {
-    let h = ProjectHarness::new("bad-xref");
-    h.write_content("content/a.md", "# A");
-    h.write_metadata(
-        r#"
-artists: []
-news:
-  - slug: a
-    title: "A"
-    file: content/a.md
-    artists: [nonexistent-artist]
-podcasts: []
-newsletters: []
-"#,
-    );
-    let (_, stderr, ok) = h.run(&["validate"]);
-    assert!(!ok);
-    assert!(stderr.contains("unknown artist"));
 }
 
 #[test]
@@ -165,13 +142,9 @@ fn lint_warns_on_short_content() {
     h.write_content("content/a.md", "Hi");
     h.write_metadata(
         r#"
-artists: []
-news:
-  - slug: a
-    title: "A"
+podcasts:
+  - title: "A"
     file: content/a.md
-podcasts: []
-newsletters: []
 "#,
     );
     let (_, stderr, ok) = h.run(&["lint"]);
@@ -187,30 +160,30 @@ fn build_produces_valid_content_json() {
     h.write_content("content/article.md", "# Hello World");
     h.write_metadata(
         r#"
-artists:
-  - slug: alice
-    name: "Alice"
-news:
-  - slug: my-article
-    title: "My Article"
+podcasts:
+  - title: "My Podcast"
     file: content/article.md
     category: tech
-    artists: [alice]
-podcasts: []
-newsletters: []
 "#,
     );
 
+    // Set artist_id in cite.toml
+    let mut toml = fs::read_to_string(h.project.join("cite.toml")).unwrap();
+    let re = Regex::new(r#"(?m)^(artist_id\s*=\s*)"[^"]*""#).unwrap();
+    toml = re.replace(&toml, r#"$1"alice_uuid""#).to_string();
+    fs::write(h.project.join("cite.toml"), toml).unwrap();
     h.run_ok(&["build"]);
 
     let bundle = h.read_bundle();
+    assert!(h.project.join("build").exists());
     assert_eq!(bundle["project"], "build-test");
-    assert_eq!(bundle["compiler_version"], "0");
-    assert_eq!(bundle["artists"].as_array().unwrap().len(), 1);
-    assert_eq!(bundle["artists"][0]["slug"], "alice");
-    assert_eq!(bundle["news"].as_array().unwrap().len(), 1);
-    assert_eq!(bundle["news"][0]["slug"], "my-article");
-    assert_eq!(bundle["news"][0]["content"], "# Hello World");
+    assert_eq!(bundle["compiler_version"], 1.0);
+    assert_eq!(bundle["artist_id"], "alice_uuid");
+    assert_eq!(bundle["podcasts"].as_array().unwrap().len(), 1);
+    let pod = &bundle["podcasts"][0];
+    assert!(!pod["id"].as_str().unwrap().is_empty());
+    assert_eq!(pod["title"], "My Podcast");
+    assert_eq!(pod["content"], "# Hello World");
 }
 
 #[test]
@@ -238,14 +211,10 @@ fn build_generates_timelines_from_bib_citations() {
     );
     h.write_metadata(
         r#"
-artists: []
-news:
-  - slug: release-1
-    title: "Release 1"
+podcasts:
+  - title: "Release 1"
     file: content/release.md
     citation: content/papers.bib
-podcasts: []
-newsletters: []
 "#,
     );
 
@@ -260,8 +229,7 @@ newsletters: []
     );
 
     let tl = &timelines[0];
-    assert_eq!(tl["slug"], "release-1-timeline");
-    assert_eq!(tl["title"], "Release 1 Timeline");
+    assert!(!tl["id"].as_str().unwrap().is_empty());
 
     let entries = tl["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 2);
@@ -281,66 +249,52 @@ fn build_is_idempotent_with_cache() {
     h.write_content("content/article.md", "# Same");
     h.write_metadata(
         r#"
-artists: []
-news:
-  - slug: a
-    title: "A"
+podcasts:
+  - title: "A"
     file: content/article.md
-podcasts: []
-newsletters: []
 "#,
     );
 
     h.run_ok(&["build"]);
     let first = h.read_bundle();
 
-    // cached build — no output means nothing changed
     let (_, stderr, ok) = h.run(&["build"]);
     assert!(ok, "cached build: {stderr}");
 
     h.run_ok(&["build", "--force"]);
 
     let second = h.read_bundle();
-    assert_eq!(first, second, "force rebuild should match");
+    // Compare everything except the auto-generated UUID (which changes each run)
+    let first_content = &first["podcasts"][0]["content"];
+    let second_content = &second["podcasts"][0]["content"];
+    assert_eq!(
+        first_content, second_content,
+        "force rebuild content should match"
+    );
+    assert_eq!(first["project"], second["project"]);
+    assert_eq!(first["artist_id"], second["artist_id"]);
 }
 
 #[test]
-fn build_embeds_content_and_resolves_wiki_links() {
-    let h = ProjectHarness::new("wiki-test");
-    h.write_content("content/main.md", "See [[ai-article]] for details");
-    h.write_content("content/ai.md", "# AI Article");
+fn build_does_not_resolve_wiki_links() {
+    let h = ProjectHarness::new("no-wiki-test");
+    h.write_content("content/main.md", "See [[other-page]] for details");
     h.write_metadata(
         r#"
-artists: []
-news:
-  - slug: main
-    title: "Main"
+podcasts:
+  - title: "Main"
     file: content/main.md
-  - slug: ai-article
-    title: "AI Article"
-    file: content/ai.md
-podcasts: []
-newsletters: []
 "#,
     );
 
     h.run_ok(&["build"]);
 
     let bundle = h.read_bundle();
-    let main = bundle["news"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|n| n["slug"] == "main")
-        .unwrap();
-    let content = main["content"].as_str().unwrap();
+    let content = bundle["podcasts"][0]["content"].as_str().unwrap();
+    // Wiki links are not resolved — they pass through as-is
     assert!(
-        content.contains("{{slug:ai-article}}"),
-        "wiki-link should resolve, got: {content}"
-    );
-    assert!(
-        !content.contains("[[ai-article]]"),
-        "raw wiki-link should not remain"
+        content.contains("[[other-page]]"),
+        "wiki-link should remain as-is, got: {content}"
     );
 }
 
@@ -352,27 +306,20 @@ fn status_shows_project_info() {
     h.write_content("content/a.md", "# Content");
     h.write_metadata(
         r#"
-artists:
-  - slug: alice
-    name: "Alice"
-news:
-  - slug: a
-    title: "A"
+podcasts:
+  - title: "A"
     file: content/a.md
-    artists: [alice]
-podcasts: []
-newsletters: []
 "#,
     );
 
     let stderr = h.run_ok(&["status"]);
     assert!(stderr.contains("status-test"));
-    assert!(stderr.contains("Artists:  1"));
+    assert!(stderr.contains("Artist ID"));
 
     h.run_ok(&["build"]);
 
     let stderr = h.run_ok(&["status"]);
-    assert!(stderr.contains("✔ (exists)"));
+    assert!(stderr.contains("exists"));
 }
 
 // ── doctor ──────────────────────────────────────────────────────
@@ -401,13 +348,9 @@ fn clean_removes_artifacts_and_is_idempotent() {
     h.write_content("content/a.md", "# A");
     h.write_metadata(
         r#"
-artists: []
-news:
-  - slug: a
-    title: "A"
+podcasts:
+  - title: "A"
     file: content/a.md
-podcasts: []
-newsletters: []
 "#,
     );
     h.run_ok(&["build"]);
@@ -438,10 +381,11 @@ fn deploy_fails_without_build() {
     let h = ProjectHarness::new("no-build");
     fs::write(
         h.project.join("cite.toml"),
-        "[project]\nname = \"no-build\"\nversion = \"0.1.0\"\n\n[build]\ncompiler_version = \"0\"\nincremental = true\noutput_format = \"json\"\n\n[backend]\nstaging_url = \"https://test.supabase.co\"\nstaging_service_key = \"test-key\"\n",
+        "[project]\nname = \"no-build\"\nversion = \"0.1.0\"\nlanguage = \"en\"\nmetadata_file = \"metadata.yml\"\nartist_id = \"\"\n\n[build]\ncompiler_version = 0.0\nincremental = true\noutput_format = \"json\"\n\n[backend]\nstaging_url = \"https://test.supabase.co\"\nstaging_service_key = \"test-key\"\n",
     ).unwrap();
     let (_, stderr, ok) = h.run(&["deploy"]);
     assert!(!ok);
+    eprintln!("DEBUG stderr: {}", stderr);
     assert!(stderr.contains("No build artifact"));
 }
 
@@ -461,37 +405,17 @@ fn rollback_fails_without_backend() {
 fn full_workflow_end_to_end() {
     let h = ProjectHarness::new("e2e");
 
-    h.write_content("content/ai.md", "# AI Article\nSee [[ml-article]].");
-    h.write_content("content/ml.md", "# ML Article");
+    h.write_content("content/ai.md", "# AI Article\nSome content about AI.");
+    h.write_content("content/ml.md", "# ML Article\nSome content about ML.");
     h.write_metadata(
         r#"
-artists:
-  - slug: alice
-    name: "Alice"
-  - slug: bob
-    name: "Bob"
-news:
-  - slug: ai-article
-    title: "AI Article"
+podcasts:
+  - title: "AI Article"
     file: content/ai.md
     category: tech
-    artists: [alice, bob]
-  - slug: ml-article
-    title: "ML Article"
+  - title: "ML Article"
     file: content/ml.md
     category: tech
-    artists: [alice]
-podcasts:
-  - slug: ai-podcast
-    title: "AI Podcast"
-    file: content/ai.md
-    duration_seconds: 1800
-newsletters:
-  - slug: weekly
-    title: "Weekly"
-    issue_number: 1
-    published_date: "2026-06-10"
-    included_news: [ai-article]
 "#,
     );
 
@@ -500,20 +424,22 @@ newsletters:
     h.run_ok(&["build"]);
 
     let stderr = h.run_ok(&["status"]);
-    assert!(stderr.contains("Artists:  2"));
-    assert!(stderr.contains("News:     2"));
-    assert!(stderr.contains("Podcasts: 1"));
-    assert!(stderr.contains("Newsletters: 1"));
-
+    assert!(stderr.contains("Artist ID"));
+    assert!(stderr.contains("Podcasts: 2"));
     let bundle = h.read_bundle();
     assert_eq!(bundle["project"], "e2e");
-    assert_eq!(bundle["artists"].as_array().unwrap().len(), 2);
-    assert_eq!(bundle["news"].as_array().unwrap().len(), 2);
+    assert_eq!(bundle["podcasts"].as_array().unwrap().len(), 2);
     assert!(
-        bundle["news"][0]["content"]
+        bundle["podcasts"][0]["content"]
             .as_str()
             .unwrap()
-            .contains("{{slug:ml-article}}")
+            .contains("AI")
+    );
+    assert!(
+        bundle["podcasts"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("ML")
     );
 
     h.run_ok(&["clean"]);

@@ -1,6 +1,6 @@
 # cite-cli
 
-CLI tool for scaffolding, validating, building, and deploying news content to Supabase.
+CLI tool for scaffolding, validating, building, and deploying podcast content to Supabase.
 
 ## Installation
 
@@ -28,9 +28,11 @@ cargo build --release
 
 ```bash
 cite-cli init my-project
+# edit metadata.yml and add content files
 cite-cli validate --path my-project
 cite-cli build --path my-project
 cite-cli status --path my-project
+cite-cli deploy --path my-project
 ```
 
 ## Tests
@@ -38,29 +40,35 @@ cite-cli status --path my-project
 ```bash
 cargo test
 ```
-## Build a release binary:
-
-```bash
-cargo build --release
-./target/release/cite-cli --help
-```
-and then can use this:
-```
-./target/release/cite-cli init my-project
-./target/release/cite-cli validate
-```
 
 ## Commands
 
 | Command | Description |
 |---|---|
 | `init <name>` | Scaffold a new project |
-| `validate` | Check structure, metadata, cross-refs, file existence |
-| `lint` | Naming conventions, audio metadata, word counts |
-| `build` | Incremental build → `build/content.json` |
-| `deploy` | Upsert to Supabase staging with rollback support |
+| `validate` | Check structure, metadata, file existence |
+| `lint` | Word counts and content quality checks |
+| `build` | Incremental build -> `build/content.json` |
+| `deploy` | Deploy to Supabase (full JSON to storage + table subset) |
 | `status` | Project health overview |
 | `doctor` | Diagnose config and structure issues |
 | `clean` | Remove build artifacts and cache |
+| `rollback <id>` | Undo a deployment by ID |
 
 All commands accept `--path <dir>` to target a specific directory.
+Without `--path`, projects are auto-discovered in the current directory and subdirectories.
+
+## Project Structure
+
+```
+my-project/
+├── cite.toml           # Project manifest
+├── metadata.yml        # Podcast content metadata
+├── content/            # Markdown & BibTeX content files
+│   ├── article1.md     
+│   └── article1.bib
+├── assets/
+│   ├── audio/          # Podcast audio files
+│   └── images/         # Thumbnails and cover art
+└── build/              # Auto-Generated build output (gitignored)
+```

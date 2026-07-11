@@ -9,7 +9,7 @@ pub async fn upgrade() -> Result<(), CiteError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| CiteError::Config(format!("Cannot determine executable path: {e}")))?;
 
-    eprintln!("{}", "Checking for updates...".bold());
+    eprintln!("{}", "Checking for updates".bold());
 
     let client = reqwest::Client::new();
     let api_url = format!("https://api.github.com/repos/{REPO}/releases/latest");
@@ -38,7 +38,7 @@ pub async fn upgrade() -> Result<(), CiteError> {
     if current == latest {
         eprintln!(
             "{}",
-            format!("✔ Already up to date (v{current})").green().bold()
+            format!("Already up to date (v{current})").green().bold()
         );
         return Ok(());
     }
@@ -46,14 +46,14 @@ pub async fn upgrade() -> Result<(), CiteError> {
     if !is_newer(latest, current) {
         eprintln!(
             "{}",
-            format!("ℹ Local version v{current} is newer than remote v{latest}").cyan()
+            format!("Local version v{current} is newer than remote v{latest}").cyan()
         );
         return Ok(());
     }
 
     eprintln!(
         "{}",
-        format!("✔ New version available: v{latest} (current: v{current})")
+        format!("New version available: v{latest} (current: v{current})")
             .yellow()
             .bold()
     );
@@ -64,7 +64,7 @@ pub async fn upgrade() -> Result<(), CiteError> {
 
     eprintln!(
         "{}",
-        format!("Downloading {BIN_NAME} v{latest} for {target}...").bold()
+        format!("Downloading {BIN_NAME} v{latest} for {target}").bold()
     );
 
     let tmp_path = {
@@ -93,7 +93,7 @@ pub async fn upgrade() -> Result<(), CiteError> {
 
     std::fs::rename(&tmp_path, &current_exe)?;
 
-    eprintln!("{}", format!("✔ Updated to v{latest}").green().bold());
+    eprintln!("{}", format!("Updated to v{latest}").green().bold());
     Ok(())
 }
 
@@ -111,12 +111,14 @@ fn is_newer(a: &str, b: &str) -> bool {
     parse_version(a) > parse_version(b)
 }
 
-fn parse_version(v: &str) -> (u64, u64, u64) {
-    let parts: Vec<&str> = v.splitn(3, '.').collect();
+fn parse_version(v: &str) -> (u64, u64, u64, u64) {
+    let clean = v.split_once('-').map(|(base, _)| base).unwrap_or(v);
+    let parts: Vec<&str> = clean.splitn(3, '.').collect();
     (
         parts.first().and_then(|s| s.parse().ok()).unwrap_or(0),
         parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
         parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0),
+        if v.contains('-') { 1 } else { 0 },
     )
 }
 
@@ -126,10 +128,12 @@ mod tests {
 
     #[test]
     fn test_parse_version() {
-        assert_eq!(parse_version("0.1.0"), (0, 1, 0));
-        assert_eq!(parse_version("1.0.0"), (1, 0, 0));
-        assert_eq!(parse_version("0.0.1"), (0, 0, 1));
-        assert_eq!(parse_version("2.5.3"), (2, 5, 3));
+        assert_eq!(parse_version("0.1.0"), (0, 1, 0, 0));
+        assert_eq!(parse_version("1.0.0"), (1, 0, 0, 0));
+        assert_eq!(parse_version("0.0.1"), (0, 0, 1, 0));
+        assert_eq!(parse_version("2.5.3"), (2, 5, 3, 0));
+        assert_eq!(parse_version("0.1.0-alpha"), (0, 1, 0, 1));
+        assert_eq!(parse_version("0.1.0-rc.1"), (0, 1, 0, 1));
     }
 
     #[test]
@@ -139,6 +143,8 @@ mod tests {
         assert!(is_newer("0.1.1", "0.1.0"));
         assert!(!is_newer("0.1.0", "0.1.0"));
         assert!(!is_newer("0.1.0", "1.0.0"));
+        assert!(!is_newer("0.1.0", "0.1.0-alpha"));
+        assert!(is_newer("0.1.0-alpha", "0.0.9"));
     }
 
     #[test]
