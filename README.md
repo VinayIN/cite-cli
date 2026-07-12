@@ -69,6 +69,6 @@ my-project/
 │   └── article1.bib
 ├── assets/
 │   ├── audio/          # Podcast audio files
-│   └── images/         # Thumbnails and cover art
+│   └── image/          # Thumbnails and cover art
 └── build/              # Auto-Generated build output (gitignored)
 ```

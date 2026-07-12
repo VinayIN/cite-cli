@@ -26,7 +26,7 @@ podcasts:
     source_url: "https://example.com"
     category: "artificial intelligence"
     audio: assets/audio/episode.mp3
-    thumbnail: assets/images/thumb.jpg
+    thumbnail: assets/image/thumb.jpg
     citation: content/my-article.bib
 ```
 
@@ -76,7 +76,7 @@ content.json → Upload full bundle to storage as {deployment_id}.json
 
 - All rows tagged with `deployment_id` for rollback.
 - Dry-run mode (`--dry-run`) shows what would happen without writing.
-- Service key sourced from env var `CITE_STAGING_SERVICE_KEY` or `cite.toml`.
+- Service key sourced from `backend.staging_service_key` in `cite.toml`.
 
 ## 8. Project Structure
 
@@ -87,7 +87,7 @@ my-project/
 ├── content/               # Markdown content files
 ├── assets/
 │   ├── audio/             # MP3/WAV/M4A files
-│   └── images/            # Thumbnails, cover art
+│   └── image/             # Thumbnails, cover art
 └── build/                 # Output (gitignored)
 ```
 

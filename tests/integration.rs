@@ -87,7 +87,7 @@ fn init_creates_project_structure() {
     assert!(h.project.join("metadata.yml").exists(), "metadata.yml");
     assert!(h.project.join("content").is_dir(), "content/");
     assert!(h.project.join("assets/audio").is_dir(), "assets/audio/");
-    assert!(h.project.join("assets/images").is_dir(), "assets/images/");
+    assert!(h.project.join("assets/image").is_dir(), "assets/image/");
     assert!(!h.project.join("build").exists());
     assert!(h.project.join(".gitignore").exists(), ".gitignore");
 }
@@ -102,16 +102,16 @@ fn init_is_idempotent_on_existing_project() {
     assert!(stderr.contains("skipped"));
 }
 
-// ── validate ────────────────────────────────────────────────────
+// ── doctor ────────────────────────────────────────────────────
 
 #[test]
-fn validate_passes_on_empty_project() {
+fn doctor_passes_on_empty_project() {
     let h = ProjectHarness::new("empty");
-    h.run_ok(&["validate"]);
+    h.run_ok(&["doctor"]);
 }
 
 #[test]
-fn validate_catches_missing_file() {
+fn doctor_catches_missing_file() {
     let h = ProjectHarness::new("missing-file");
     h.write_metadata(
         r#"
@@ -120,16 +120,16 @@ podcasts:
     file: content/nonexistent.md
 "#,
     );
-    let (_, stderr, ok) = h.run(&["validate"]);
+    let (_, stderr, ok) = h.run(&["doctor"]);
     assert!(!ok);
     assert!(stderr.contains("does not exist"));
 }
 
 #[test]
-fn validate_catches_missing_metadata() {
+fn doctor_catches_missing_metadata() {
     let h = ProjectHarness::new("no-meta");
     fs::remove_file(h.project.join("metadata.yml")).unwrap();
-    let (_, stderr, ok) = h.run(&["validate"]);
+    let (_, stderr, ok) = h.run(&["doctor"]);
     assert!(!ok);
     assert!(stderr.contains("not found"));
 }
@@ -419,7 +419,7 @@ podcasts:
 "#,
     );
 
-    h.run_ok(&["validate"]);
+    h.run_ok(&["doctor"]);
     h.run_ok(&["lint"]);
     h.run_ok(&["build"]);
 
@@ -460,5 +460,5 @@ fn help_prints_usage() {
 #[test]
 fn verbose_flag_works() {
     let h = ProjectHarness::new("verbose-test");
-    h.run_ok(&["validate", "--verbose"]);
+    h.run_ok(&["doctor", "--verbose"]);
 }

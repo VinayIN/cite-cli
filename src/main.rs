@@ -2,6 +2,7 @@ mod cache;
 mod cli;
 mod compiler;
 mod deploy;
+mod doctor;
 mod error;
 mod manifest;
 mod metadata;
@@ -9,7 +10,6 @@ mod project;
 mod scaffold;
 mod uninstall;
 mod upgrade;
-mod validation;
 
 use clap::Parser;
 use cli::Cli;

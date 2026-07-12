@@ -6,7 +6,6 @@ use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::RequestBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::env;
 use std::path::PathBuf;
 use tracing::instrument;
 use uuid::Uuid;
@@ -17,8 +16,11 @@ const STORAGE_BUCKET: &str = "assets";
 struct DeployContext {
     client: reqwest::Client,
     base_url: String,
-    service_key: String,
+    api_key: String,
+    bearer: String,
     root: PathBuf,
+    project_name: String,
+    artist_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,19 +29,27 @@ struct DeploymentRecord {
     storage_path: String,
     news_ids: Vec<i64>,
     timeline_ids: Vec<i64>,
+    #[serde(default)]
+    asset_paths: Vec<String>,
 }
 
 #[derive(Debug)]
 struct DeployedPodcast {
     news_id: i64,
     timeline_ids: Vec<i64>,
+    asset_paths: Vec<String>,
 }
 
-fn with_auth(builder: RequestBuilder, service_key: &str) -> RequestBuilder {
+#[derive(Debug)]
+struct UploadedAsset {
+    storage_path: String,
+    public_url: String,
+}
+
+fn with_auth(builder: RequestBuilder, api_key: &str, bearer: &str) -> RequestBuilder {
     builder
-        .header("apikey", service_key)
-        .header("Authorization", format!("Bearer {service_key}"))
-        .header("Content-Type", "application/json")
+        .header("apikey", api_key)
+        .header("Authorization", format!("Bearer {bearer}"))
 }
 
 fn encode_url(s: &str) -> String {
@@ -50,6 +60,38 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+fn build_context(
+    ctx: &ProjectContext,
+    backend: &BackendConfig,
+    project_name: String,
+    artist_id: Uuid,
+) -> Result<DeployContext, CiteError> {
+    let session = load_session();
+    Ok(DeployContext {
+        client: reqwest::Client::new(),
+        base_url: backend.staging_url.trim_end_matches('/').to_string(),
+        api_key: backend.staging_service_key.clone(),
+        bearer: resolve_bearer(backend, session.as_ref())?,
+        root: ctx.root.clone(),
+        project_name,
+        artist_id,
+    })
+}
+
+async fn ensure_success(
+    response: reqwest::Response,
+    context: impl std::fmt::Display,
+) -> Result<reqwest::Response, CiteError> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    Err(CiteError::Deploy(format!(
+        "{context}: HTTP {status} - {body}"
+    )))
+}
+
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name, dry_run))]
 pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError> {
     let backend = ctx
@@ -58,7 +100,6 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
         .as_ref()
         .ok_or_else(|| CiteError::Deploy("No [backend] section in cite.toml".to_string()))?;
 
-    let service_key = resolve_service_key(backend)?;
     let bundle_path = ctx.build_dir().join("content.json");
     if !bundle_path.exists() {
         return Err(CiteError::Deploy(
@@ -68,7 +109,7 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
     let bundle_str = std::fs::read_to_string(&bundle_path)?;
     let bundle: Value = serde_json::from_str(&bundle_str)?;
     let deployment_id = Uuid::new_v4().to_string();
-    let project_slug = bundle
+    let project_name = bundle
         .get("project")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
@@ -113,43 +154,31 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
     let artist_id = Uuid::parse_str(&artist_id).map_err(|_| {
         CiteError::Deploy("artist_id in content.json must be a valid UUID".to_string())
     })?;
-    let client = reqwest::Client::new();
-    let base_url = backend.staging_url.trim_end_matches('/').to_string();
-    let storage_path = format!("{project_slug}/{deployment_id}.json");
+    let dctx = build_context(ctx, backend, project_name.clone(), artist_id)?;
+    let storage_path = format!("{artist_id}/{project_name}/{deployment_id}.json");
     let bundle_bytes = serde_json::to_vec_pretty(&bundle)?;
-    let public_bundle_url = upload_bytes(
-        &client,
-        &base_url,
-        &service_key,
-        &storage_path,
-        &bundle_bytes,
-        "application/json",
-    )
-    .await?;
-    eprintln!("  Uploaded bundle to {}", public_bundle_url.cyan());
 
     let mut record = DeploymentRecord {
         deployment_id: deployment_id.clone(),
         storage_path: storage_path.clone(),
         news_ids: Vec::new(),
         timeline_ids: Vec::new(),
-    };
-
-    let dctx = DeployContext {
-        client,
-        base_url,
-        service_key,
-        root: ctx.root.clone(),
+        asset_paths: Vec::new(),
     };
 
     ensure_artist_exists(&dctx, artist_id).await?;
-    let plan_id = resolve_plan_id(&dctx, &backend.subscription_plan).await?;
+    let plan_id = fetch_subscription_plan(&dctx).await?;
 
     for pod in &podcasts {
         let deployed = deploy_podcast(&dctx, pod, &timelines, artist_id, plan_id).await?;
         record.news_ids.push(deployed.news_id);
         record.timeline_ids.extend(deployed.timeline_ids);
+        record.asset_paths.extend(deployed.asset_paths);
     }
+
+    let public_bundle_url =
+        upload_bytes(&dctx, &storage_path, &bundle_bytes, "application/json").await?;
+    eprintln!("  Uploaded bundle to {}", public_bundle_url.cyan());
 
     persist_deployment_record(ctx, &record).await?;
 
@@ -192,43 +221,36 @@ async fn deploy_podcast(
     )
     .await?;
 
-    let thumbnail_url = upload_optional_asset(
-        dctx,
-        podcast_id,
-        podcast.get("thumbnail").and_then(|v| v.as_str()),
-        "thumbnails",
-    )
-    .await?;
+    let mut asset_paths = Vec::new();
 
-    let news_id = insert_news_row(
-        dctx,
-        title,
-        content,
-        category_id,
-        url_id,
-        thumbnail_url.as_deref(),
-    )
-    .await?;
-
+    let news_id = insert_news_row(dctx, title, content, category_id, url_id, None).await?;
     ensure_artist_link(dctx, artist_id, news_id).await?;
     ensure_metric_row(dctx, news_id).await?;
 
-    if let Some(audio_url) = upload_optional_asset(
+    let timeline_ids = deploy_timelines_for_news(dctx, timeline_groups, news_id).await?;
+
+    if let Some(asset) = upload_optional_asset(
         dctx,
-        podcast_id,
-        podcast.get("audio").and_then(|v| v.as_str()),
-        "audio",
+        podcast.get("thumbnail").and_then(|v| v.as_str()),
+        "image",
     )
     .await?
     {
-        insert_podcast_row(dctx, news_id, title, &audio_url, plan_id).await?;
+        update_news_thumbnail(dctx, news_id, &asset.public_url).await?;
+        asset_paths.push(asset.storage_path);
     }
 
-    let timeline_ids = deploy_timelines_for_news(dctx, timeline_groups, news_id).await?;
+    if let Some(audio) =
+        upload_optional_asset(dctx, podcast.get("audio").and_then(|v| v.as_str()), "audio").await?
+    {
+        insert_podcast_row(dctx, news_id, title, &audio.public_url, plan_id).await?;
+        asset_paths.push(audio.storage_path);
+    }
 
     Ok(DeployedPodcast {
         news_id,
         timeline_ids,
+        asset_paths,
     })
 }
 
@@ -320,16 +342,10 @@ async fn load_deployment_record(
 
 async fn delete_row_by_id(dctx: &DeployContext, table: &str, id: i64) -> Result<(), CiteError> {
     let url = format!("{}/rest/v1/{table}?id=eq.{id}", dctx.base_url);
-    let response = with_auth(dctx.client.delete(&url), &dctx.service_key)
+    let response = with_auth(dctx.client.delete(&url), &dctx.api_key, &dctx.bearer)
         .send()
         .await?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(CiteError::Deploy(format!(
-            "Failed to delete {table} row {id}: HTTP {status} - {body}"
-        )));
-    }
+    ensure_success(response, format!("Failed to delete {table} row {id}")).await?;
     Ok(())
 }
 
@@ -338,16 +354,14 @@ async fn delete_storage_object(dctx: &DeployContext, storage_path: &str) -> Resu
         "{}/storage/v1/object/{STORAGE_BUCKET}/{storage_path}",
         dctx.base_url
     );
-    let response = with_auth(dctx.client.delete(&url), &dctx.service_key)
+    let response = with_auth(dctx.client.delete(&url), &dctx.api_key, &dctx.bearer)
         .send()
         .await?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(CiteError::Deploy(format!(
-            "Failed to delete storage object {storage_path}: HTTP {status} - {body}"
-        )));
-    }
+    ensure_success(
+        response,
+        format!("Failed to delete storage object {storage_path}"),
+    )
+    .await?;
     Ok(())
 }
 
@@ -359,17 +373,11 @@ pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<(), C
         .as_ref()
         .ok_or_else(|| CiteError::Deploy("No [backend] section in cite.toml".to_string()))?;
 
-    let service_key = resolve_service_key(backend)?;
-    let client = reqwest::Client::new();
-    let base_url = backend.staging_url.trim_end_matches('/').to_string();
     let (record_path, record) = load_deployment_record(ctx, deployment_id).await?;
-
-    let dctx = DeployContext {
-        client,
-        base_url,
-        service_key,
-        root: ctx.root.clone(),
-    };
+    let artist_id = Uuid::parse_str(&ctx.manifest.project.artist_id).map_err(|_| {
+        CiteError::Deploy("artist_id in cite.toml must be a valid UUID".to_string())
+    })?;
+    let dctx = build_context(ctx, backend, ctx.manifest.project.name.clone(), artist_id)?;
 
     eprintln!(
         "{}",
@@ -386,6 +394,14 @@ pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<(), C
     for news_id in &record.news_ids {
         delete_row_by_id(&dctx, "news", *news_id).await?;
         eprintln!("  Cleared news {news_id}");
+    }
+
+    for asset_path in &record.asset_paths {
+        if let Err(e) = delete_storage_object(&dctx, asset_path).await {
+            eprintln!("  {} {e}", "warning:".yellow().bold());
+        } else {
+            eprintln!("  Cleared asset {asset_path}");
+        }
     }
 
     if let Err(e) = delete_storage_object(&dctx, &record.storage_path).await {
@@ -405,18 +421,236 @@ pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<(), C
     Ok(())
 }
 
-fn resolve_service_key(backend: &BackendConfig) -> Result<String, CiteError> {
-    let key = env::var("CITE_STAGING_SERVICE_KEY")
-        .unwrap_or_else(|_| backend.staging_service_key.clone());
+#[derive(Serialize, Deserialize, Debug)]
+struct Session {
+    access_token: String,
+    refresh_token: String,
+    email: String,
+}
 
-    if key.is_empty() {
+fn session_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".cite").join("session.json")
+}
+
+fn load_session() -> Option<Session> {
+    let path = session_path();
+    let content = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn save_session(session: &Session) -> Result<(), CiteError> {
+    let path = session_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(session)?)?;
+    Ok(())
+}
+
+fn resolve_bearer(backend: &BackendConfig, session: Option<&Session>) -> Result<String, CiteError> {
+    if let Some(s) = session {
+        return Ok(s.access_token.clone());
+    }
+    if backend.staging_service_key.is_empty() {
         Err(CiteError::Deploy(
-            "No service key found. Set CITE_STAGING_SERVICE_KEY env var or configure backend.staging_service_key in cite.toml"
+            "Not logged in and no backend.staging_service_key configured. Run 'cite-cli login' or set the key in cite.toml"
                 .to_string(),
         ))
     } else {
-        Ok(key)
+        Ok(backend.staging_service_key.clone())
     }
+}
+
+pub async fn login(
+    ctx: &ProjectContext,
+    email: Option<String>,
+    password: Option<String>,
+) -> Result<(), CiteError> {
+    let backend = ctx
+        .manifest
+        .backend
+        .as_ref()
+        .ok_or_else(|| CiteError::Deploy("No [backend] section in cite.toml".to_string()))?;
+    if backend.staging_service_key.is_empty() {
+        return Err(CiteError::Deploy(
+            "backend.staging_service_key (Supabase anon/publishable key) is required for login"
+                .to_string(),
+        ));
+    }
+
+    let email = match email {
+        Some(e) => e,
+        None => {
+            eprint!("Email: ");
+            let mut s = String::new();
+            std::io::stdin().read_line(&mut s)?;
+            s.trim().to_string()
+        }
+    };
+    let password = match password {
+        Some(p) => p,
+        None => {
+            eprint!("Password: ");
+            let mut s = String::new();
+            std::io::stdin().read_line(&mut s)?;
+            s.trim().to_string()
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/auth/v1/token?grant_type=password",
+        backend.staging_url.trim_end_matches('/')
+    );
+    let response = client
+        .post(&url)
+        .header("apikey", &backend.staging_service_key)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({ "email": email, "password": password }))
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(CiteError::Deploy(format!(
+            "Login failed: HTTP {status} - {body}"
+        )));
+    }
+
+    #[derive(Deserialize)]
+    struct TokenResponse {
+        access_token: String,
+        refresh_token: String,
+    }
+    let token: TokenResponse = serde_json::from_str(&body)
+        .map_err(|e| CiteError::Deploy(format!("Invalid login response: {e}")))?;
+
+    let session = Session {
+        access_token: token.access_token.clone(),
+        refresh_token: token.refresh_token,
+        email: email.clone(),
+    };
+    save_session(&session)?;
+    eprintln!("{}", format!("Logged in as {email}").green().bold());
+
+    match fetch_user_artists(backend, &token.access_token).await {
+        Ok(artists) if artists.is_empty() => {
+            eprintln!("{}", "No artist linked to this account.".yellow().bold());
+            match prompt_create_artist(backend, &token.access_token).await? {
+                Some((id, name)) => {
+                    eprintln!(
+                        "{}",
+                        format!("Created artist '{name}' ({id})").green().bold()
+                    );
+                }
+                None => {
+                    eprintln!("  Skipped artist creation");
+                }
+            }
+        }
+        Ok(artists) => {
+            eprintln!("  Associated artist(s):");
+            for (id, name) in &artists {
+                eprintln!("    - {name} ({id})");
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "  {} Could not fetch artists: {e}",
+                "warning:".yellow().bold()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn fetch_user_artists(
+    backend: &BackendConfig,
+    token: &str,
+) -> Result<Vec<(String, String)>, CiteError> {
+    let url = format!(
+        "{}/rest/v1/artists?select=id,name",
+        backend.staging_url.trim_end_matches('/')
+    );
+    let resp = with_auth(
+        reqwest::Client::new().get(&url),
+        &backend.staging_service_key,
+        token,
+    )
+    .send()
+    .await?;
+    if !resp.status().is_success() {
+        return Err(CiteError::Deploy(format!(
+            "Failed to fetch artists: HTTP {}",
+            resp.status()
+        )));
+    }
+    let rows: Vec<Value> = resp.json().await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| {
+            let id = r.get("id")?.as_str()?.to_string();
+            let name = r.get("name")?.as_str()?.to_string();
+            Some((id, name))
+        })
+        .collect())
+}
+
+fn prompt_line(label: &str) -> Result<String, CiteError> {
+    eprint!("{label}");
+    let mut s = String::new();
+    std::io::stdin().read_line(&mut s)?;
+    Ok(s.trim().to_string())
+}
+
+async fn prompt_create_artist(
+    backend: &BackendConfig,
+    token: &str,
+) -> Result<Option<(String, String)>, CiteError> {
+    let name = prompt_line("Artist name: ")?;
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let description = prompt_line("Description (optional): ")?;
+    let website = prompt_line("Website URL (optional): ")?;
+
+    let mut payload = build_map(&[("name", Value::String(name.clone()))]);
+    if !description.is_empty() {
+        payload.insert("description".into(), Value::String(description));
+    }
+    if !website.is_empty() {
+        payload.insert("website_url".into(), Value::String(website));
+    }
+
+    let url = format!(
+        "{}/rest/v1/artists",
+        backend.staging_url.trim_end_matches('/')
+    );
+    let resp = with_auth(
+        reqwest::Client::new().post(&url),
+        &backend.staging_service_key,
+        token,
+    )
+    .header("Prefer", "return=representation")
+    .json(&payload)
+    .send()
+    .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(CiteError::Deploy(format!(
+            "Failed to create artist: HTTP {status} - {body}"
+        )));
+    }
+    let row: Value = resp.json().await?;
+    let id = row
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(Some((id, name)))
 }
 
 fn build_map(fields: &[(&str, Value)]) -> serde_json::Map<String, Value> {
@@ -448,7 +682,7 @@ async fn lookup_row_id(
         &dctx.base_url,
         encode_url(value)
     );
-    let resp = with_auth(dctx.client.get(&url), &dctx.service_key)
+    let resp = with_auth(dctx.client.get(&url), &dctx.api_key, &dctx.bearer)
         .send()
         .await?;
     if !resp.status().is_success() {
@@ -466,18 +700,12 @@ async fn insert_row(
     payload: serde_json::Map<String, Value>,
 ) -> Result<i64, CiteError> {
     let url = format!("{}/rest/v1/{table}", dctx.base_url);
-    let response = with_auth(dctx.client.post(&url), &dctx.service_key)
+    let response = with_auth(dctx.client.post(&url), &dctx.api_key, &dctx.bearer)
         .header("Prefer", "return=representation")
         .json(&payload)
         .send()
         .await?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(CiteError::Deploy(format!(
-            "Failed to insert into {table}: HTTP {status} - {body}"
-        )));
-    }
+    let response = ensure_success(response, format!("Failed to insert into {table}")).await?;
 
     let row: Value = response.json().await?;
     extract_id(&row)
@@ -486,7 +714,7 @@ async fn insert_row(
 
 async fn ensure_artist_exists(dctx: &DeployContext, artist_id: Uuid) -> Result<(), CiteError> {
     let url = format!("{}/rest/v1/artists?id=eq.{}", &dctx.base_url, artist_id);
-    let resp = with_auth(dctx.client.get(&url), &dctx.service_key)
+    let resp = with_auth(dctx.client.get(&url), &dctx.api_key, &dctx.bearer)
         .send()
         .await?;
     if !resp.status().is_success() {
@@ -580,10 +808,9 @@ async fn ensure_url_id(
 
 async fn upload_optional_asset(
     dctx: &DeployContext,
-    podcast_id: &str,
     asset: Option<&str>,
     kind: &str,
-) -> Result<Option<String>, CiteError> {
+) -> Result<Option<UploadedAsset>, CiteError> {
     let Some(asset_path) = asset.filter(|value| !value.trim().is_empty()) else {
         return Ok(None);
     };
@@ -598,23 +825,22 @@ async fn upload_optional_asset(
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("asset.bin");
-    let storage_path = format!("{}/{}/{}", kind, podcast_id, file_name);
+    let storage_path = format!(
+        "{}/{}/{}/{}",
+        dctx.artist_id, dctx.project_name, kind, file_name
+    );
     let mime = local_path
         .extension()
         .and_then(|value| value.to_str())
         .map(mime_for_extension)
         .unwrap_or("application/octet-stream");
 
-    upload_bytes(
-        &dctx.client,
-        &dctx.base_url,
-        &dctx.service_key,
-        &storage_path,
-        &bytes,
-        mime,
-    )
-    .await
-    .map(Some)
+    let public_url = upload_bytes(dctx, &storage_path, &bytes, mime).await?;
+
+    Ok(Some(UploadedAsset {
+        storage_path,
+        public_url,
+    }))
 }
 
 async fn insert_news_row(
@@ -659,6 +885,36 @@ async fn ensure_artist_link(
     Ok(())
 }
 
+async fn update_row(
+    dctx: &DeployContext,
+    table: &str,
+    id: i64,
+    payload: serde_json::Map<String, Value>,
+) -> Result<(), CiteError> {
+    let url = format!("{}/rest/v1/{table}?id=eq.{id}", dctx.base_url);
+    let response = with_auth(dctx.client.patch(&url), &dctx.api_key, &dctx.bearer)
+        .header("Prefer", "return=representation")
+        .json(&payload)
+        .send()
+        .await?;
+    ensure_success(response, format!("Failed to update {table} {id}")).await?;
+    Ok(())
+}
+
+async fn update_news_thumbnail(
+    dctx: &DeployContext,
+    news_id: i64,
+    thumbnail: &str,
+) -> Result<(), CiteError> {
+    update_row(
+        dctx,
+        "news",
+        news_id,
+        build_map(&[("thumbnail", Value::String(thumbnail.to_string()))]),
+    )
+    .await
+}
+
 async fn ensure_metric_row(dctx: &DeployContext, news_id: i64) -> Result<(), CiteError> {
     insert_row(
         dctx,
@@ -690,13 +946,28 @@ async fn insert_podcast_row(
     Ok(())
 }
 
-async fn resolve_plan_id(dctx: &DeployContext, tier_name: &str) -> Result<i64, CiteError> {
-    lookup_row_id(dctx, "subscription_plans", "tier_name", tier_name)
-        .await?
+async fn fetch_subscription_plan(dctx: &DeployContext) -> Result<i64, CiteError> {
+    let url = format!(
+        "{}/rest/v1/user_subscriptions?select=subscription_plan_id&limit=1",
+        dctx.base_url
+    );
+    let resp = with_auth(dctx.client.get(&url), &dctx.api_key, &dctx.bearer)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(CiteError::Deploy(format!(
+            "Failed to fetch subscription: HTTP {}",
+            resp.status()
+        )));
+    }
+    let rows: Vec<Value> = resp.json().await?;
+    rows.first()
+        .and_then(|r| r.get("subscription_plan_id").and_then(|v| v.as_i64()))
         .ok_or_else(|| {
-            CiteError::Deploy(format!(
-                "Subscription plan '{tier_name}' not found in the database. Have your infra team create it before deploying."
-            ))
+            CiteError::Deploy(
+                "No active subscription found for this account. Subscribe before deploying."
+                    .to_string(),
+            )
         })
 }
 
@@ -736,28 +1007,21 @@ fn word_count(content: &str) -> i64 {
 }
 
 async fn upload_bytes(
-    client: &reqwest::Client,
-    base_url: &str,
-    service_key: &str,
+    dctx: &DeployContext,
     storage_path: &str,
     bytes: &[u8],
     mime: &str,
 ) -> Result<String, CiteError> {
+    let base_url = &dctx.base_url;
     let url = format!("{base_url}/storage/v1/object/{STORAGE_BUCKET}/{storage_path}");
 
-    let response = with_auth(client.post(&url), service_key)
+    let response = with_auth(dctx.client.post(&url), &dctx.api_key, &dctx.bearer)
         .header("Content-Type", mime)
         .body(bytes.to_vec())
         .send()
         .await?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(CiteError::Deploy(format!(
-            "Failed to upload {storage_path}: HTTP {status} - {body}"
-        )));
-    }
+    ensure_success(response, format!("Failed to upload {storage_path}")).await?;
 
     let public_url = format!("{base_url}/storage/v1/object/public/{STORAGE_BUCKET}/{storage_path}");
     Ok(public_url)
@@ -787,41 +1051,33 @@ mod tests {
         BackendConfig {
             staging_url: url.to_string(),
             staging_service_key: key.to_string(),
-            subscription_plan: "Basic".into(),
         }
     }
 
     #[test]
-    fn test_resolve_service_key_env_wins() {
-        unsafe {
-            std::env::set_var("CITE_STAGING_SERVICE_KEY", "from-env");
-        }
+    fn test_resolve_bearer_uses_inline_when_no_session() {
         assert_eq!(
-            resolve_service_key(&backend("https://x.supabase.co", "inline")).unwrap(),
-            "from-env"
-        );
-        unsafe {
-            std::env::remove_var("CITE_STAGING_SERVICE_KEY");
-        }
-    }
-
-    #[test]
-    fn test_resolve_service_key_falls_back_to_inline() {
-        unsafe {
-            std::env::remove_var("CITE_STAGING_SERVICE_KEY");
-        }
-        assert_eq!(
-            resolve_service_key(&backend("https://x.supabase.co", "inline")).unwrap(),
+            resolve_bearer(&backend("https://x.supabase.co", "inline"), None).unwrap(),
             "inline"
         );
     }
 
     #[test]
-    fn test_resolve_service_key_errors_when_empty() {
-        unsafe {
-            std::env::remove_var("CITE_STAGING_SERVICE_KEY");
-        }
-        assert!(resolve_service_key(&backend("https://x.supabase.co", "")).is_err());
+    fn test_resolve_bearer_prefers_session() {
+        let session = Session {
+            access_token: "user-jwt".into(),
+            refresh_token: "refresh".into(),
+            email: "a@b.c".into(),
+        };
+        assert_eq!(
+            resolve_bearer(&backend("https://x.supabase.co", "inline"), Some(&session)).unwrap(),
+            "user-jwt"
+        );
+    }
+
+    #[test]
+    fn test_resolve_bearer_errors_when_empty() {
+        assert!(resolve_bearer(&backend("https://x.supabase.co", ""), None).is_err());
     }
 
     #[test]
@@ -888,6 +1144,7 @@ mod http_tests {
         BackendConfig, BuildConfig, CompilerConfig, Manifest, ProjectConfig, ValidationConfig,
     };
     use crate::project::ProjectContext;
+    use httpmock::Method::PATCH;
     use httpmock::prelude::*;
     use std::path::Path;
 
@@ -903,7 +1160,6 @@ mod http_tests {
             backend: Some(BackendConfig {
                 staging_url: staging_url.into(),
                 staging_service_key: "key".into(),
-                subscription_plan: "Basic".into(),
             }),
             compiler: CompilerConfig::default(),
             assets: crate::manifest::AssetsConfig::default(),
@@ -919,7 +1175,7 @@ podcasts:
     file: content/episode.md
     source_url: "https://example.com/episode"
     category: tech
-    thumbnail: assets/images/cover.png
+    thumbnail: assets/image/cover.png
     audio: assets/audio/episode.mp3
     citation: content/papers.bib
 "#,
@@ -945,8 +1201,8 @@ podcasts:
 "#,
         )
         .unwrap();
-        std::fs::create_dir_all(dir.join("assets/images")).unwrap();
-        std::fs::write(dir.join("assets/images/cover.png"), "png").unwrap();
+        std::fs::create_dir_all(dir.join("assets/image")).unwrap();
+        std::fs::write(dir.join("assets/image/cover.png"), "png").unwrap();
         std::fs::create_dir_all(dir.join("assets/audio")).unwrap();
         std::fs::write(dir.join("assets/audio/episode.mp3"), "mp3").unwrap();
     }
@@ -966,6 +1222,10 @@ podcasts:
 
         let news = server.mock(|w, t| {
             w.method(POST).path("/rest/v1/news");
+            t.status(200).json_body(serde_json::json!([{ "id": 1 }]));
+        });
+        let news_patch = server.mock(|w, t| {
+            w.method(PATCH).path("/rest/v1/news");
             t.status(200).json_body(serde_json::json!([{ "id": 1 }]));
         });
         let artists_news = server.mock(|w, t| {
@@ -989,8 +1249,9 @@ podcasts:
             t.status(200).json_body(serde_json::json!([{ "id": 1 }]));
         });
         let plans_get = server.mock(|w, t| {
-            w.method(GET).path("/rest/v1/subscription_plans");
-            t.status(200).json_body(serde_json::json!([{ "id": 1 }]));
+            w.method(GET).path("/rest/v1/user_subscriptions");
+            t.status(200)
+                .json_body(serde_json::json!([{ "subscription_plan_id": 3 }]));
         });
         let podcasts = server.mock(|w, t| {
             w.method(POST).path("/rest/v1/podcasts");
@@ -1038,6 +1299,7 @@ podcasts:
         deploy(&ctx, false).await.expect("deploy should succeed");
 
         assert_eq!(news.hits(), 1, "one news row");
+        assert_eq!(news_patch.hits(), 1, "thumbnail patched after upload");
         assert_eq!(artists_news.hits(), 1, "artist link");
         assert_eq!(metric.hits(), 1, "metric row");
         assert_eq!(categories.hits(), 1, "category created");
@@ -1045,7 +1307,7 @@ podcasts:
         assert_eq!(domains.hits(), 1, "domain from source url");
         assert!(
             plans_get.hits() >= 1,
-            "subscription plan resolved from database"
+            "subscription plan fetched from user_subscriptions"
         );
         assert_eq!(podcasts.hits(), 1, "podcast row");
         assert_eq!(timeline.hits(), 1, "timeline from citation");

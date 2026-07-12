@@ -7,7 +7,7 @@ pub struct Podcast {
     pub id: String,
     #[serde(default)]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub file: String,
     #[serde(default)]
     pub source_url: Option<String>,

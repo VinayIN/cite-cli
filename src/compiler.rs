@@ -57,17 +57,9 @@ async fn build_bundle(ctx: &ProjectContext) -> Result<ContentBundle, CiteError> 
             }
         }
 
-        if let Some(thumbnail) = &item.thumbnail {
-            item.thumbnail = Some(format!(
-                "assets/{}",
-                thumbnail.trim_start_matches("assets/")
-            ));
-        }
-
-        if let Some(audio) = &item.audio {
-            let rewritten = format!("assets/{}", audio.trim_start_matches("assets/"));
-            item.audio = Some(rewritten);
-        }
+        let normalize_asset = |path: &str| format!("assets/{}", path.trim_start_matches("assets/"));
+        item.thumbnail = item.thumbnail.as_deref().map(normalize_asset);
+        item.audio = item.audio.as_deref().map(normalize_asset);
 
         if let Some(citation) = &item.citation {
             let bib_src = ctx.root.join(citation);

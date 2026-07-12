@@ -25,7 +25,7 @@ pub fn init_project(name: &str, root: &Path) -> Result<InitReport, CiteError> {
             .push(root.to_string_lossy().to_string());
     }
 
-    for sub in ["content", "assets/audio", "assets/images"] {
+    for sub in ["content", "assets/audio", "assets/image"] {
         let path = root.join(sub);
         if !path.exists() {
             fs::create_dir_all(&path)?;
@@ -118,13 +118,11 @@ output_format = "{output_format}"
 
 # Deployment (optional — Needed for staging podcasts to Aoux Server, uncomment to enable)
 # staging_url: URL of the Aoux Server to deploy to.
-# staging_service_key: Service key for the Aoux Server.
-# subscription_plan: Subscription plan for your account (Basic/Premium/Pro)
+# staging_service_key: Supabase anon/publishable key (client key). For user-scoped deploys, run 'cite-cli login' or use a service-role secret here (Ask Aoux team).
 
 # [backend]
 # staging_url = ""
 # staging_service_key = ""
-# subscription_plan = ""
 
 # Compiler, Assets, Validation
 # enabled_extensions: Compiler extensions enabled for this project.
@@ -162,12 +160,11 @@ fn metadata_template() -> String {
 # Uncomment the example below (remove the leading `# `) to define your first podcast.
 
 podcasts:
-  # - id: ""                    # Optional; auto-generated when empty
-  #   title: "My First Podcast" # Display title of the episode
+  # - title: "My First Podcast" # Display title of the episode
   #   file: content/episode.md  # Markdown source for the episode content
   #   source_url: ""            # Original URL (records the reference domain); optional
   #   category: ""              # Category name; created in the DB if missing; optional
-  #   thumbnail: ""             # Path under assets/images; optional
+  #   thumbnail: ""             # Path under assets/image; optional
   #   audio: ""                 # Path under assets/audio; optional
   #   citation: ""              # BibTeX file; timelines are generated from its entries; optional
 "#

@@ -24,10 +24,6 @@ fn get_metadata_file() -> String {
     "metadata.yml".to_string()
 }
 
-fn get_uuid() -> String {
-    uuid::Uuid::new_v4().to_string()
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     #[serde(default)]
@@ -36,7 +32,7 @@ pub struct ProjectConfig {
     pub language: String,
     #[serde(default = "get_metadata_file")]
     pub metadata_file: String,
-    #[serde(default = "get_uuid")]
+    #[serde(default)]
     pub artist_id: String,
 }
 
@@ -46,7 +42,7 @@ impl Default for ProjectConfig {
             name: String::new(),
             language: get_language(),
             metadata_file: get_metadata_file(),
-            artist_id: get_uuid(),
+            artist_id: String::new(),
         }
     }
 }
@@ -89,12 +85,6 @@ pub struct BackendConfig {
     pub staging_url: String,
     #[serde(default)]
     pub staging_service_key: String,
-    #[serde(default = "get_subscription_plan")]
-    pub subscription_plan: String,
-}
-
-fn get_subscription_plan() -> String {
-    "Basic".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,7 +178,7 @@ mod tests {
         assert!(m.build.incremental);
         assert!(m.backend.is_none());
         assert!(m.validation.strict);
-        assert!(!m.project.artist_id.is_empty());
+        assert!(m.project.artist_id.is_empty());
     }
 
     #[test]

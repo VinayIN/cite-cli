@@ -1,5 +1,6 @@
 use crate::error::ValidationReport;
 use crate::project::ProjectContext;
+use colored::Colorize;
 use std::path::Path;
 use tracing::instrument;
 
@@ -33,7 +34,7 @@ fn validate_project_structure(ctx: &ProjectContext, report: &mut ValidationRepor
 
     let dirs = [
         ("content", ctx.content_dir()),
-        ("assets/images", ctx.root.join("assets/images")),
+        ("assets/image", ctx.root.join("assets/image")),
         ("assets/audio", ctx.root.join("assets/audio")),
     ];
     for (name, path) in &dirs {
@@ -136,6 +137,109 @@ pub fn lint_all(ctx: &ProjectContext) -> ValidationReport {
     report
 }
 
+pub enum Style {
+    Success,
+    Error,
+    Warning,
+    Header,
+}
+
+pub fn styled(msg: impl AsRef<str>, style: Style) -> String {
+    let s = msg.as_ref();
+    match style {
+        Style::Success => format!("  {}", s.green().bold()),
+        Style::Error => format!("  {}", s.red().bold()),
+        Style::Warning => format!("  {}", s.yellow().bold()),
+        Style::Header => s.bold().underline().to_string(),
+    }
+}
+
+pub fn check_file(root: &Path, filename: &str, hint: &str) {
+    let path = root.join(filename);
+    if path.exists() {
+        eprintln!("{}", styled(format!("{filename} found"), Style::Success));
+    } else if hint.is_empty() {
+        eprintln!("{}", styled(format!("{filename} not found"), Style::Error));
+    } else {
+        eprintln!(
+            "{}",
+            styled(format!("{filename} not found - {hint}"), Style::Error)
+        );
+    }
+}
+
+/// Run validation, linting, and environment/configuration diagnostics for a
+/// project, printing a combined report. Returns true if validation produced
+/// errors (so the caller can exit non-zero, like the old `validate` command).
+pub fn run(ctx: &ProjectContext) -> bool {
+    eprintln!("{}", styled("Running diagnostics", Style::Header));
+
+    let validation = validate_all(ctx);
+    validation.print();
+
+    let lint = lint_all(ctx);
+    if !lint.warnings.is_empty() || !lint.infos.is_empty() {
+        eprintln!("{}", styled("Lint", Style::Header));
+        lint.print();
+    }
+
+    eprintln!("{}", styled("Project", Style::Header));
+    check_file(&ctx.root, "cite.toml", "run 'cite-cli init'");
+    check_file(&ctx.root, "metadata.yml", "");
+    for dir in &["content", "assets/audio", "assets/image", "build"] {
+        let d = ctx.root.join(dir);
+        if d.is_dir() {
+            eprintln!("{}", styled(format!("{dir}/ exists"), Style::Success));
+        } else if *dir == "build" {
+            eprintln!("  {dir}/ missing (created by build)");
+        } else {
+            eprintln!("  {dir}/ missing (will be created on init)");
+        }
+    }
+
+    if ctx.manifest.backend.is_some() {
+        eprintln!(
+            "{}",
+            styled("Backend configured for staging", Style::Success)
+        );
+    } else {
+        eprintln!("  No backend configured (deploy will fail)");
+    }
+    if ctx.manifest.build.incremental {
+        eprintln!("{}", styled("Incremental builds enabled", Style::Success));
+    }
+    if ctx.manifest.project.artist_id.is_empty() {
+        eprintln!(
+            "{}",
+            styled(
+                "Artist ID is empty - set it in [project] in cite.toml",
+                Style::Warning
+            )
+        );
+    } else {
+        eprintln!("  Artist ID: {}", ctx.manifest.project.artist_id);
+    }
+    if ctx
+        .manifest
+        .backend
+        .as_ref()
+        .map(|b| !b.staging_service_key.is_empty())
+        .unwrap_or(false)
+    {
+        eprintln!("  Using inline staging_service_key from cite.toml");
+    } else {
+        eprintln!(
+            "{}",
+            styled(
+                "No staging service key found - deploy will fail",
+                Style::Warning
+            )
+        );
+    }
+
+    validation.has_errors()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,7 +259,7 @@ mod tests {
         std::fs::write(root.join("metadata.yml"), "podcasts: []\n").unwrap();
         std::fs::create_dir_all(root.join("content")).unwrap();
         std::fs::create_dir_all(root.join("assets/audio")).unwrap();
-        std::fs::create_dir_all(root.join("assets/images")).unwrap();
+        std::fs::create_dir_all(root.join("assets/image")).unwrap();
         let ctx = ProjectContext {
             root,
             manifest,
