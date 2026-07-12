@@ -304,8 +304,7 @@ fn build_empty_project_succeeds() {
     h.run_ok(&["build"]);
     let bundle = h.read_bundle();
     let pods = bundle["podcasts"].as_array().unwrap();
-    assert_eq!(pods.len(), 1, "template includes one default podcast");
-    assert!(pods[0]["content"].is_null(), "no content since no file set");
+    assert_eq!(pods.len(), 0, "template has no default podcast");
 }
 
 #[test]
@@ -418,7 +417,6 @@ fn deploy_fails_without_build() {
     ).unwrap();
     let (_, stderr, ok) = h.run(&["deploy"]);
     assert!(!ok);
-    eprintln!("DEBUG stderr: {}", stderr);
     assert!(stderr.contains("No build artifact"));
 }
 

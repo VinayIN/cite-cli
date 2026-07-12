@@ -35,7 +35,6 @@ struct DeploymentRecord {
 #[derive(Debug)]
 struct DeployedPodcast {
     news_id: i64,
-    timeline_ids: Vec<i64>,
     asset_paths: Vec<String>,
 }
 
@@ -165,12 +164,14 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
     ensure_artist_exists(&dctx, artist_id).await?;
     let plan_id = fetch_subscription_plan(&dctx).await?;
 
+    let timeline_ids = deploy_timelines(&dctx, &timelines).await?;
+
     for pod in &podcasts {
-        let deployed = deploy_podcast(&dctx, pod, &timelines, artist_id, plan_id).await?;
+        let deployed = deploy_podcast(&dctx, pod, &timeline_ids, artist_id, plan_id).await?;
         record.news_ids.push(deployed.news_id);
-        record.timeline_ids.extend(deployed.timeline_ids);
         record.asset_paths.extend(deployed.asset_paths);
     }
+    record.timeline_ids = timeline_ids;
 
     let public_bundle_url =
         upload_bytes(&dctx, &storage_path, &bundle_bytes, "application/json").await?;
@@ -197,7 +198,7 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
 async fn deploy_podcast(
     dctx: &DeployContext,
     podcast: &Value,
-    timeline_groups: &[Value],
+    timeline_ids: &[i64],
     artist_id: Uuid,
     plan_id: i64,
 ) -> Result<DeployedPodcast, CiteError> {
@@ -230,7 +231,7 @@ async fn deploy_podcast(
     ensure_artist_link(dctx, artist_id, news_id).await?;
     ensure_metric_row(dctx, news_id).await?;
 
-    let timeline_ids = deploy_timelines_for_news(dctx, timeline_groups, news_id).await?;
+    link_timelines_to_news(dctx, timeline_ids, news_id).await?;
 
     if let Some(asset) = upload_optional_asset(
         dctx,
@@ -254,15 +255,13 @@ async fn deploy_podcast(
 
     Ok(DeployedPodcast {
         news_id,
-        timeline_ids,
         asset_paths,
     })
 }
 
-async fn deploy_timelines_for_news(
+async fn deploy_timelines(
     dctx: &DeployContext,
     timeline_groups: &[Value],
-    news_id: i64,
 ) -> Result<Vec<i64>, CiteError> {
     let mut timeline_ids = Vec::new();
 
@@ -295,25 +294,34 @@ async fn deploy_timelines_for_news(
             }
 
             let timeline_id = insert_row(dctx, "timeline", timeline_payload).await?;
-
-            insert_row(
-                dctx,
-                "timeline_news",
-                build_map(&[
-                    ("timeline_id", Value::Number(timeline_id.into())),
-                    ("news_id", Value::Number(news_id.into())),
-                ]),
-            )
-            .await?;
             timeline_ids.push(timeline_id);
             info!("Deployed timeline entry: {title}");
         }
     }
 
     if !timeline_ids.is_empty() {
-        info!("Linked {} timeline entries", timeline_ids.len());
+        info!("Deployed {} timeline entries", timeline_ids.len());
     }
     Ok(timeline_ids)
+}
+
+async fn link_timelines_to_news(
+    dctx: &DeployContext,
+    timeline_ids: &[i64],
+    news_id: i64,
+) -> Result<(), CiteError> {
+    for timeline_id in timeline_ids {
+        insert_row(
+            dctx,
+            "timeline_news",
+            build_map(&[
+                ("timeline_id", Value::Number((*timeline_id).into())),
+                ("news_id", Value::Number(news_id.into())),
+            ]),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn persist_deployment_record(
@@ -671,11 +679,7 @@ async fn prompt_create_artist(
         )));
     }
     let row: Value = resp.json().await?;
-    let id = row
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let id = extract_uuid(&row).unwrap_or_default();
     Ok(Some((id, name)))
 }
 
@@ -693,6 +697,16 @@ fn extract_id(value: &Value) -> Option<i64> {
             .first()
             .and_then(|row| row.get("id").and_then(|id| id.as_i64())),
         Value::Object(map) => map.get("id").and_then(|id| id.as_i64()),
+        _ => None,
+    }
+}
+
+fn extract_uuid(value: &Value) -> Option<String> {
+    match value {
+        Value::Array(rows) => rows
+            .first()
+            .and_then(|row| row.get("id").and_then(|id| id.as_str().map(String::from))),
+        Value::Object(map) => map.get("id").and_then(|id| id.as_str().map(String::from)),
         _ => None,
     }
 }

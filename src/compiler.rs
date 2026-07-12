@@ -8,7 +8,6 @@ use serde::Serialize;
 use tracing::instrument;
 use uuid::Uuid;
 
-/// Build artifact emitted by `compile` into content.json.
 #[derive(Debug, Clone, Serialize)]
 pub struct ContentBundle {
     pub compiler_version: f64,
@@ -69,7 +68,7 @@ impl CompileOutcome {
                         Style::Info
                     )
                 );
-                eprintln!("{}", styled("2 info(s)", Style::Success));
+                eprintln!("{}", styled("Build completed successfully", Style::Success));
             }
         }
     }
@@ -175,6 +174,27 @@ fn parse_bibtex(content: &str) -> Vec<TimelineEntry> {
             Some(i) => pos + i,
             None => break,
         };
+        let entry_type = content[pos..open].trim().to_lowercase();
+        if matches!(
+            entry_type.as_str(),
+            "comment" | "string" | "preamble" | "xdata"
+        ) {
+            let mut depth = 1;
+            for (offset, &b) in bytes[open + 1..].iter().enumerate() {
+                match b {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            pos = open + 1 + offset + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            continue;
+        }
         pos = open + 1;
 
         let mut depth = 1;
@@ -458,5 +478,21 @@ mod tests {
         let entries = parse_bibtex(bib);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].url.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn test_parse_bibtex_skips_non_entries() {
+        let bib = r#"
+@comment{ this should be ignored }
+@string{ key = "value" }
+@preamble{ "x" }
+@article{real,
+  title = {Real Entry},
+  year = {2023},
+}
+"#;
+        let entries = parse_bibtex(bib);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].title.contains("Real Entry"));
     }
 }

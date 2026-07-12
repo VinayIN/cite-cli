@@ -71,9 +71,7 @@ pub struct Metadata {
 
 impl Default for Metadata {
     fn default() -> Self {
-        Self {
-            podcasts: vec![Podcast::default()],
-        }
+        Self { podcasts: vec![] }
     }
 }
 

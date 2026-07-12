@@ -138,17 +138,6 @@ fn print_project_header(name: &str) {
     eprintln!("{}", styled(format!("── {name} ──"), Style::Header));
 }
 
-fn check_file(root: &Path, filename: &str, hint: &str) {
-    let path = root.join(filename);
-    if path.exists() {
-        info!("{filename} found");
-    } else if hint.is_empty() {
-        warn!("{filename} not found");
-    } else {
-        warn!("{filename} not found - {hint}");
-    }
-}
-
 impl Command {
     pub async fn execute(self) -> Result<(), CiteError> {
         match self {
@@ -185,11 +174,22 @@ impl Command {
                     return Ok(());
                 };
                 let multi = projects.len() > 1;
+                let mut overall_has_warnings = false;
                 for ctx in &projects {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
                     }
-                    doctor::lint_all(ctx).print();
+                    let outcome = doctor::lint_all(ctx);
+                    outcome.print();
+                    if outcome.has_warnings() {
+                        overall_has_warnings = true;
+                    }
+                }
+                if !overall_has_warnings {
+                    eprintln!(
+                        "{}",
+                        styled("Lint complete — no issues found", Style::Success)
+                    );
                 }
                 Ok(())
             }
@@ -291,11 +291,13 @@ impl Command {
                 let root = resolve_path(path.clone());
                 let Some(projects) = load_projects(path, "")? else {
                     info!("Running diagnostics");
-                    check_file(&root, "cite.toml", "run 'cite-cli init'");
-                    check_file(&root, "metadata.yml", "");
+                    doctor::check_file(&root, "cite.toml", "run 'cite-cli init'");
+                    doctor::check_file(&root, "metadata.yml", "");
                     return Ok(());
                 };
                 let multi = projects.len() > 1;
+                let mut overall_has_errors = false;
+                let mut overall_has_warnings = false;
                 for ctx in &projects {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
@@ -303,10 +305,21 @@ impl Command {
                     let outcome = doctor::run(ctx)?;
                     outcome.print();
                     if outcome.has_errors() {
-                        return Err(CiteError::Config(
-                            "Doctor found validation errors".to_string(),
-                        ));
+                        overall_has_errors = true;
                     }
+                    if outcome.has_warnings() {
+                        overall_has_warnings = true;
+                    }
+                }
+                if overall_has_errors {
+                    return Err(CiteError::Config(
+                        "Doctor found validation errors".to_string(),
+                    ));
+                } else if !overall_has_warnings {
+                    eprintln!(
+                        "{}",
+                        styled("Doctor check complete — no issues found", Style::Success)
+                    );
                 }
                 Ok(())
             }

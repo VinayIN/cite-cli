@@ -1,7 +1,7 @@
 use crate::project::ProjectContext;
 use crate::report::{CiteError, Style, styled};
 use std::path::Path;
-use tracing::{info, instrument, warn};
+use tracing::{error, info, instrument, warn};
 
 pub enum DoctorOutcome {
     Clean,
@@ -15,6 +15,13 @@ impl DoctorOutcome {
     pub fn has_errors(&self) -> bool {
         match self {
             DoctorOutcome::Findings { errors, .. } => !errors.is_empty(),
+            _ => false,
+        }
+    }
+
+    pub fn has_warnings(&self) -> bool {
+        match self {
+            DoctorOutcome::Findings { warnings, .. } => !warnings.is_empty(),
             _ => false,
         }
     }
@@ -65,17 +72,16 @@ impl DoctorOutcome {
             DoctorOutcome::Clean => {}
             DoctorOutcome::Findings { errors, warnings } => {
                 for e in errors {
-                    eprintln!("{}", styled(e, Style::Error));
+                    error!("{}", e);
                 }
                 for w in warnings {
-                    eprintln!("{}", styled(w, Style::Warning));
+                    warn!("{}", w);
                 }
-                let summary = format!("{} error(s), {} warning(s)", errors.len(), warnings.len());
-                if !errors.is_empty() {
-                    eprintln!("{}", styled(summary, Style::Error));
-                } else {
-                    eprintln!("{}", styled(summary, Style::Warning));
-                }
+                eprintln!(
+                    "{} {}",
+                    styled(format!("{} error(s)", errors.len()), Style::Error),
+                    styled(format!("{} warning(s)", warnings.len()), Style::Warning)
+                );
             }
         }
     }
@@ -273,13 +279,17 @@ pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
     {
         info!("Backend configured for staging");
     } else {
-        warn!("No backend configured (deploy will fail)");
+        let msg = "No backend configured (deploy will fail)".to_string();
+        warn!("{msg}");
+        outcome.push_warning(msg);
     }
     if ctx.manifest.build.incremental {
         info!("Incremental builds enabled");
     }
     if ctx.manifest.project.artist_id.is_empty() {
-        warn!("Artist ID is empty - set it in [project] in cite.toml");
+        let msg = "Artist ID is empty - set it in [project] in cite.toml".to_string();
+        warn!("{msg}");
+        outcome.push_warning(msg);
     } else {
         info!("Artist ID: {}", ctx.manifest.project.artist_id);
     }
@@ -293,7 +303,9 @@ pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
     {
         info!("Using inline staging_service_key from cite.toml");
     } else {
-        warn!("No staging service key found - deploy will fail");
+        let msg = "No staging service key found - deploy will fail".to_string();
+        warn!("{msg}");
+        outcome.push_warning(msg);
     }
 
     Ok(outcome)
