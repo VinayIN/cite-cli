@@ -11,7 +11,7 @@
 
 ## 3. Core Concepts
 - **Project**: A folder with `cite.toml`, `metadata.yml`, and content directories.
-- **Artist**: A pre-existing Supabase user identified by UUID in `metadata.yml`. The CLI user is the content creator.
+- **Artist**: A pre-existing Supabase user identified by UUID in `cite.toml` (`[project].artist_id`). The CLI user is the content creator.
 - **Podcast**: A content item consisting of a markdown file, optional audio, optional source URL, optional thumbnail, and optional BibTeX citation.
 - **Compiler Protocol**: Versioned process transforming source files into a `content.json` bundle.
 - **Deployment**: Full `content.json` uploaded to Supabase Storage as `{deployment_id}.json`, plus a subset written to database tables for queryability.
@@ -19,7 +19,6 @@
 ## 4. Metadata Model (`metadata.yml`)
 
 ```yaml
-artist_id: "11111111-1111-1111-1111-111111111111"
 podcasts:
   - title: "My Podcast"
     file: content/my-article.md
@@ -30,7 +29,7 @@ podcasts:
     citation: content/my-article.bib
 ```
 
-- `artist_id` references an existing artist record in the database.
+- `artist_id` references an existing artist record in the database (configured in `cite.toml` under `[project]`).
 - `podcasts` is an array of content items. Each has a title, markdown file, and optional audio/thumbnail/citation.
 - No slugs, no junction tables, no tier-based audio variants.
 
@@ -39,14 +38,16 @@ podcasts:
 | Command | Description |
 |---------|-------------|
 | `init <name>` | Create project structure with starter files |
-| `validate` | Check structure, metadata, file existence, asset formats |
+| `doctor` | Validate structure, metadata, file existence, asset formats, and config |
 | `lint` | Word count and content quality checks |
 | `build` | Compile content → `build/content.json` with UUIDs and BibTeX timelines |
-| `deploy` | Upload full bundle to storage; populate `news`, `podcasts`, `artists_news`, `timeline` tables |
+| `deploy` | Upload full bundle to storage; populate `news`, `podcasts`, `artists_news`, `timeline`, `timeline_news`, `urls`, `categories`, `domains`, `metric` tables |
 | `status` | Project health overview |
-| `doctor` | Diagnose configuration and dependency issues |
 | `clean` | Remove `build/` directory and cache |
-| `rollback <id>` | Delete rows tagged with deployment_id from `podcasts`, `artists_news`, `news` |
+| `rollback <id>` | Delete rows and storage objects associated with a deployment |
+| `login` | Authenticate with Supabase and link artist account |
+| `upgrade` | Self-update to the latest GitHub release |
+| `uninstall` | Remove cite-cli binary and shell config references |
 
 ## 6. Build Pipeline
 
@@ -66,10 +67,13 @@ The compiler:
 ```
 content.json → Upload full bundle to storage as {deployment_id}.json
             → For each podcast:
-                Resolve category by name
-                Create url record from source_url
+                Verify artist exists
+                Resolve/create category by name
+                Create url record (with domain lookup) from source_url
                 Insert news row
-                Auto-create artists_news junction
+                Create artists_news junction
+                Create metric row
+                Upload thumbnail → update news.thumbnail
                 Upload audio → insert podcasts row
                 Parse BibTeX timelines → insert timeline + timeline_news
 ```
@@ -83,12 +87,13 @@ content.json → Upload full bundle to storage as {deployment_id}.json
 ```
 my-project/
 ├── cite.toml              # Project manifest
-├── metadata.yml           # Artist ID + podcast list
-├── content/               # Markdown content files
+├── metadata.yml           # Podcast content metadata
+├── .gitignore             # Ignores build/ and cache
+├── content/               # Markdown & BibTeX content files
 ├── assets/
 │   ├── audio/             # MP3/WAV/M4A files
 │   └── image/             # Thumbnails, cover art
-└── build/                 # Output (gitignored)
+└── build/                 # Build output (gitignored)
 ```
 
 ## 9. Design Principles

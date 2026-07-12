@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
-use crate::report::{CiteError, Style, check_file, styled};
+use crate::report::{CiteError, Style, styled};
 use crate::{compiler, deploy, doctor, project, scaffold, uninstall, upgrade};
 
 #[derive(Parser)]
@@ -135,7 +135,18 @@ fn load_projects(
 }
 
 fn print_project_header(name: &str) {
-    info!("── {name} ──");
+    eprintln!("{}", styled(format!("── {name} ──"), Style::Header));
+}
+
+fn check_file(root: &Path, filename: &str, hint: &str) {
+    let path = root.join(filename);
+    if path.exists() {
+        info!("{filename} found");
+    } else if hint.is_empty() {
+        warn!("{filename} not found");
+    } else {
+        warn!("{filename} not found - {hint}");
+    }
 }
 
 impl Command {
@@ -178,8 +189,7 @@ impl Command {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
                     }
-                    let report = doctor::lint_all(ctx);
-                    report.print();
+                    doctor::lint_all(ctx).print();
                 }
                 Ok(())
             }
@@ -203,7 +213,7 @@ impl Command {
                     }
                 }
                 if has_errors {
-                    Err(CiteError::Validation(
+                    Err(CiteError::Config(
                         "Build failed in one or more projects".to_string(),
                     ))
                 } else {
@@ -248,8 +258,10 @@ impl Command {
                     eprintln!("  Name: {}", ctx.manifest.project.name);
                     eprintln!("  Project Root: {}", ctx.root.display());
                     eprintln!("  Artist ID: {}", ctx.manifest.project.artist_id);
-                    if let Some(backend) = &ctx.manifest.backend {
-                        eprintln!("  Publishing to: {}", backend.staging_url);
+                    if let Some(backend) = &ctx.manifest.backend
+                        && let Some(url) = &backend.staging_url
+                    {
+                        eprintln!("  Publishing to: {url}");
                     }
                     eprintln!("  Podcasts: {}", ctx.metadata.podcasts.len());
                     let build_path = ctx.build_dir().join("content.json");
@@ -288,8 +300,10 @@ impl Command {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
                     }
-                    if doctor::run(ctx) {
-                        return Err(CiteError::Validation(
+                    let outcome = doctor::run(ctx)?;
+                    outcome.print();
+                    if outcome.has_errors() {
+                        return Err(CiteError::Config(
                             "Doctor found validation errors".to_string(),
                         ));
                     }

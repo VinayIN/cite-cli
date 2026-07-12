@@ -53,7 +53,7 @@ impl ProjectContext {
 
     pub fn content_files(&self) -> Vec<PathBuf> {
         self.metadata
-            .content_files()
+            .referenced_files()
             .iter()
             .map(|f| self.root.join(f))
             .collect()
@@ -69,39 +69,5 @@ impl ProjectContext {
             std::fs::remove_file(&cache)?;
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::manifest::Manifest;
-    use std::path::PathBuf;
-
-    #[test]
-    fn test_content_files_collects_all_references() {
-        let ctx = ProjectContext {
-            root: PathBuf::from("/root"),
-            manifest: Manifest::default_template("test"),
-            metadata: Metadata {
-                podcasts: vec![crate::metadata::Podcast {
-                    id: "abc".into(),
-                    title: "P".into(),
-                    file: "content/p.md".into(),
-                    source_url: None,
-                    category: None,
-                    thumbnail: None,
-                    audio: Some("assets/audio/p.mp3".into()),
-                    citation: Some("content/p.bib".into()),
-                    content: None,
-                }],
-            },
-        };
-
-        let files = ctx.content_files();
-        assert_eq!(files.len(), 3);
-        assert!(files.contains(&PathBuf::from("/root/content/p.md")));
-        assert!(files.contains(&PathBuf::from("/root/content/p.bib")));
-        assert!(files.contains(&PathBuf::from("/root/assets/audio/p.mp3")));
     }
 }

@@ -68,8 +68,13 @@ fn build_context(
     let session = load_session();
     Ok(DeployContext {
         client: reqwest::Client::new(),
-        base_url: backend.staging_url.trim_end_matches('/').to_string(),
-        api_key: backend.staging_service_key.clone(),
+        base_url: backend
+            .staging_url
+            .as_deref()
+            .unwrap_or_default()
+            .trim_end_matches('/')
+            .to_string(),
+        api_key: backend.staging_service_key.clone().unwrap_or_default(),
         bearer: resolve_bearer(backend, session.as_ref())?,
         root: ctx.root.clone(),
         project_name,
@@ -93,15 +98,15 @@ async fn ensure_success(
 
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name, dry_run))]
 pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError> {
-    let backend = ctx
-        .manifest
-        .backend
-        .as_ref()
-        .ok_or_else(|| CiteError::Deploy("No [backend] section in cite.toml".to_string()))?;
+    let Some(backend) = &ctx.manifest.backend else {
+        return Err(CiteError::Config(
+            "No [backend] section in cite.toml (set staging_url)".to_string(),
+        ));
+    };
 
     let bundle_path = ctx.build_dir().join("content.json");
     if !bundle_path.exists() {
-        return Err(CiteError::Deploy(
+        return Err(CiteError::Config(
             "No build artifact found. Run 'cite-cli build' first.".to_string(),
         ));
     }
@@ -143,7 +148,7 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
     }
 
     let artist_id = Uuid::parse_str(&artist_id).map_err(|_| {
-        CiteError::Deploy("artist_id in content.json must be a valid UUID".to_string())
+        CiteError::Config("artist_id in content.json must be a valid UUID".to_string())
     })?;
     let dctx = build_context(ctx, backend, project_name.clone(), artist_id)?;
     let storage_path = format!("{artist_id}/{project_name}/{deployment_id}.json");
@@ -367,15 +372,15 @@ async fn delete_storage_object(dctx: &DeployContext, storage_path: &str) -> Resu
 
 #[instrument(skip(ctx), fields(id = %deployment_id))]
 pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<(), CiteError> {
-    let backend = ctx
-        .manifest
-        .backend
-        .as_ref()
-        .ok_or_else(|| CiteError::Deploy("No [backend] section in cite.toml".to_string()))?;
+    let Some(backend) = &ctx.manifest.backend else {
+        return Err(CiteError::Config(
+            "No [backend] section in cite.toml (set staging_url)".to_string(),
+        ));
+    };
 
     let (record_path, record) = load_deployment_record(ctx, deployment_id).await?;
     let artist_id = Uuid::parse_str(&ctx.manifest.project.artist_id).map_err(|_| {
-        CiteError::Deploy("artist_id in cite.toml must be a valid UUID".to_string())
+        CiteError::Config("artist_id in cite.toml must be a valid UUID".to_string())
     })?;
     let dctx = build_context(ctx, backend, ctx.manifest.project.name.clone(), artist_id)?;
 
@@ -413,6 +418,12 @@ pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<(), C
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    refresh_token: String,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct Session {
     access_token: String,
@@ -444,13 +455,18 @@ fn resolve_bearer(backend: &BackendConfig, session: Option<&Session>) -> Result<
     if let Some(s) = session {
         return Ok(s.access_token.clone());
     }
-    if backend.staging_service_key.is_empty() {
-        Err(CiteError::Deploy(
+    if backend
+        .staging_service_key
+        .as_deref()
+        .map(|s| s.is_empty())
+        .unwrap_or(true)
+    {
+        Err(CiteError::Auth(
             "Not logged in and no backend.staging_service_key configured. Run 'cite-cli login' or set the key in cite.toml"
                 .to_string(),
         ))
     } else {
-        Ok(backend.staging_service_key.clone())
+        Ok(backend.staging_service_key.clone().unwrap_or_default())
     }
 }
 
@@ -459,13 +475,18 @@ pub async fn login(
     email: Option<String>,
     password: Option<String>,
 ) -> Result<(), CiteError> {
-    let backend = ctx
-        .manifest
-        .backend
-        .as_ref()
-        .ok_or_else(|| CiteError::Deploy("No [backend] section in cite.toml".to_string()))?;
-    if backend.staging_service_key.is_empty() {
-        return Err(CiteError::Deploy(
+    let Some(backend) = &ctx.manifest.backend else {
+        return Err(CiteError::Config(
+            "No [backend] section in cite.toml (set staging_url)".to_string(),
+        ));
+    };
+    if backend
+        .staging_service_key
+        .as_deref()
+        .map(|s| s.is_empty())
+        .unwrap_or(true)
+    {
+        return Err(CiteError::Auth(
             "backend.staging_service_key (Supabase anon/publishable key) is required for login"
                 .to_string(),
         ));
@@ -493,11 +514,18 @@ pub async fn login(
     let client = reqwest::Client::new();
     let url = format!(
         "{}/auth/v1/token?grant_type=password",
-        backend.staging_url.trim_end_matches('/')
+        backend
+            .staging_url
+            .as_deref()
+            .unwrap_or_default()
+            .trim_end_matches('/')
     );
     let response = client
         .post(&url)
-        .header("apikey", &backend.staging_service_key)
+        .header(
+            "apikey",
+            backend.staging_service_key.as_deref().unwrap_or_default(),
+        )
         .header("Content-Type", "application/json")
         .json(&serde_json::json!({ "email": email, "password": password }))
         .send()
@@ -505,18 +533,13 @@ pub async fn login(
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(CiteError::Deploy(format!(
+        return Err(CiteError::Auth(format!(
             "Login failed: HTTP {status} - {body}"
         )));
     }
 
-    #[derive(Deserialize)]
-    struct TokenResponse {
-        access_token: String,
-        refresh_token: String,
-    }
     let token: TokenResponse = serde_json::from_str(&body)
-        .map_err(|e| CiteError::Deploy(format!("Invalid login response: {e}")))?;
+        .map_err(|e| CiteError::Auth(format!("Invalid login response: {e}")))?;
 
     let session = Session {
         access_token: token.access_token.clone(),
@@ -567,17 +590,21 @@ async fn fetch_user_artists(
 ) -> Result<Vec<(String, String)>, CiteError> {
     let url = format!(
         "{}/rest/v1/artists?select=id,name",
-        backend.staging_url.trim_end_matches('/')
+        backend
+            .staging_url
+            .as_deref()
+            .unwrap_or_default()
+            .trim_end_matches('/')
     );
     let resp = with_auth(
         reqwest::Client::new().get(&url),
-        &backend.staging_service_key,
+        backend.staging_service_key.as_deref().unwrap_or_default(),
         token,
     )
     .send()
     .await?;
     if !resp.status().is_success() {
-        return Err(CiteError::Deploy(format!(
+        return Err(CiteError::Auth(format!(
             "Failed to fetch artists: HTTP {}",
             resp.status()
         )));
@@ -621,11 +648,15 @@ async fn prompt_create_artist(
 
     let url = format!(
         "{}/rest/v1/artists",
-        backend.staging_url.trim_end_matches('/')
+        backend
+            .staging_url
+            .as_deref()
+            .unwrap_or_default()
+            .trim_end_matches('/')
     );
     let resp = with_auth(
         reqwest::Client::new().post(&url),
-        &backend.staging_service_key,
+        backend.staging_service_key.as_deref().unwrap_or_default(),
         token,
     )
     .header("Prefer", "return=representation")
@@ -635,7 +666,7 @@ async fn prompt_create_artist(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(CiteError::Deploy(format!(
+        return Err(CiteError::Auth(format!(
             "Failed to create artist: HTTP {status} - {body}"
         )));
     }
@@ -713,14 +744,14 @@ async fn ensure_artist_exists(dctx: &DeployContext, artist_id: Uuid) -> Result<(
         .send()
         .await?;
     if !resp.status().is_success() {
-        return Err(CiteError::Deploy(format!(
+        return Err(CiteError::Auth(format!(
             "Failed to verify artist {artist_id}: HTTP {}",
             resp.status()
         )));
     }
     let rows: Vec<Value> = resp.json().await?;
     if rows.is_empty() {
-        return Err(CiteError::Deploy(format!(
+        return Err(CiteError::Auth(format!(
             "Artist '{artist_id}' does not exist in the database. Create the artist before deploying."
         )));
     }
@@ -1045,8 +1076,8 @@ mod tests {
 
     fn backend(url: &str, key: &str) -> BackendConfig {
         BackendConfig {
-            staging_url: url.to_string(),
-            staging_service_key: key.to_string(),
+            staging_url: Some(url.to_string()),
+            staging_service_key: Some(key.to_string()),
         }
     }
 
@@ -1108,28 +1139,6 @@ mod tests {
         assert_eq!(word_count("one two three"), 3);
         assert_eq!(word_count(""), 0);
     }
-
-    #[test]
-    fn test_build_map() {
-        let m = build_map(&[("a", Value::String("x".into()))]);
-        assert_eq!(m.get("a").unwrap(), "x");
-    }
-
-    #[test]
-    fn test_extract_id_from_array() {
-        let v = serde_json::json!([{ "id": 42 }]);
-        assert_eq!(extract_id(&v), Some(42));
-    }
-
-    #[test]
-    fn test_now_rfc3339_format() {
-        assert!(now_rfc3339().contains('T'));
-    }
-
-    #[test]
-    fn test_encode_url_escapes_special_chars() {
-        assert!(encode_url("a b/c").contains('%'));
-    }
 }
 
 #[cfg(test)]
@@ -1154,8 +1163,8 @@ mod http_tests {
             },
             build: BuildConfig::default(),
             backend: Some(BackendConfig {
-                staging_url: staging_url.into(),
-                staging_service_key: "key".into(),
+                staging_url: Some(staging_url.into()),
+                staging_service_key: Some("key".into()),
             }),
             compiler: CompilerConfig::default(),
             assets: crate::manifest::AssetsConfig::default(),

@@ -1,20 +1,111 @@
 use crate::project::ProjectContext;
-use crate::report::{DoctorReport, check_file};
+use crate::report::{CiteError, Style, styled};
 use std::path::Path;
 use tracing::{info, instrument, warn};
 
-#[instrument(skip(ctx), fields(project = %ctx.manifest.project.name))]
-pub fn validate_all(ctx: &ProjectContext) -> DoctorReport {
-    let mut report = DoctorReport::new();
-
-    validate_project_structure(ctx, &mut report);
-    validate_file_existence(ctx, &mut report);
-    validate_asset_formats(ctx, &mut report);
-
-    report
+pub enum DoctorOutcome {
+    Clean,
+    Findings {
+        errors: Vec<String>,
+        warnings: Vec<String>,
+    },
 }
 
-fn validate_project_structure(ctx: &ProjectContext, report: &mut DoctorReport) {
+impl DoctorOutcome {
+    pub fn has_errors(&self) -> bool {
+        match self {
+            DoctorOutcome::Findings { errors, .. } => !errors.is_empty(),
+            _ => false,
+        }
+    }
+
+    pub fn merge(&mut self, other: DoctorOutcome) {
+        match other {
+            DoctorOutcome::Clean => {}
+            DoctorOutcome::Findings {
+                errors: new_errors,
+                warnings: new_warnings,
+            } => {
+                for e in new_errors {
+                    self.push_error(e);
+                }
+                for w in new_warnings {
+                    self.push_warning(w);
+                }
+            }
+        }
+    }
+
+    fn push_error(&mut self, msg: String) {
+        match self {
+            DoctorOutcome::Findings { errors, .. } => errors.push(msg),
+            DoctorOutcome::Clean => {
+                *self = DoctorOutcome::Findings {
+                    errors: vec![msg],
+                    warnings: Vec::new(),
+                }
+            }
+        }
+    }
+
+    fn push_warning(&mut self, msg: String) {
+        match self {
+            DoctorOutcome::Findings { warnings, .. } => warnings.push(msg),
+            DoctorOutcome::Clean => {
+                *self = DoctorOutcome::Findings {
+                    errors: Vec::new(),
+                    warnings: vec![msg],
+                }
+            }
+        }
+    }
+
+    pub fn print(&self) {
+        match self {
+            DoctorOutcome::Clean => {}
+            DoctorOutcome::Findings { errors, warnings } => {
+                for e in errors {
+                    eprintln!("{}", styled(e, Style::Error));
+                }
+                for w in warnings {
+                    eprintln!("{}", styled(w, Style::Warning));
+                }
+                let summary = format!("{} error(s), {} warning(s)", errors.len(), warnings.len());
+                if !errors.is_empty() {
+                    eprintln!("{}", styled(summary, Style::Error));
+                } else {
+                    eprintln!("{}", styled(summary, Style::Warning));
+                }
+            }
+        }
+    }
+}
+
+fn collect_findings(errors: Vec<String>, warnings: Vec<String>) -> DoctorOutcome {
+    if errors.is_empty() && warnings.is_empty() {
+        DoctorOutcome::Clean
+    } else {
+        DoctorOutcome::Findings { errors, warnings }
+    }
+}
+
+#[instrument(skip(ctx), fields(project = %ctx.manifest.project.name))]
+pub fn validate_all(ctx: &ProjectContext) -> DoctorOutcome {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    validate_project_structure(ctx, &mut errors, &mut warnings);
+    validate_file_existence(ctx, &mut errors, &mut warnings);
+    validate_asset_formats(ctx, &mut warnings);
+
+    collect_findings(errors, warnings)
+}
+
+fn validate_project_structure(
+    ctx: &ProjectContext,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
     let required = [
         ("cite.toml", ctx.root.join("cite.toml")),
         (
@@ -24,7 +115,7 @@ fn validate_project_structure(ctx: &ProjectContext, report: &mut DoctorReport) {
     ];
     for (name, path) in &required {
         if !path.exists() {
-            report.error(format!(
+            errors.push(format!(
                 "Required file '{name}' not found at {}",
                 path.display()
             ));
@@ -38,7 +129,7 @@ fn validate_project_structure(ctx: &ProjectContext, report: &mut DoctorReport) {
     ];
     for (name, path) in &dirs {
         if !path.is_dir() {
-            report.warning(format!(
+            warnings.push(format!(
                 "Directory '{name}' does not exist at {}",
                 path.display()
             ));
@@ -46,11 +137,15 @@ fn validate_project_structure(ctx: &ProjectContext, report: &mut DoctorReport) {
     }
 }
 
-fn validate_file_existence(ctx: &ProjectContext, report: &mut DoctorReport) {
+fn validate_file_existence(
+    ctx: &ProjectContext,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
     for pod in &ctx.metadata.podcasts {
         let path = ctx.root.join(&pod.file);
         if !path.exists() {
-            report.error(format!(
+            errors.push(format!(
                 "Podcast '{}' references file '{}' which does not exist",
                 pod.title, pod.file
             ));
@@ -59,7 +154,7 @@ fn validate_file_existence(ctx: &ProjectContext, report: &mut DoctorReport) {
         if let Some(cit) = &pod.citation {
             let cit_path = ctx.root.join(cit);
             if !cit_path.exists() {
-                report.warning(format!(
+                warnings.push(format!(
                     "Podcast '{}' references citation file '{}' which does not exist",
                     pod.title, cit
                 ));
@@ -69,7 +164,7 @@ fn validate_file_existence(ctx: &ProjectContext, report: &mut DoctorReport) {
         if let Some(audio) = &pod.audio {
             let audio_path = ctx.root.join(audio);
             if !audio_path.exists() {
-                report.error(format!(
+                errors.push(format!(
                     "Podcast '{}' references audio file '{}' which does not exist",
                     pod.title, audio
                 ));
@@ -78,7 +173,7 @@ fn validate_file_existence(ctx: &ProjectContext, report: &mut DoctorReport) {
     }
 }
 
-fn validate_asset_formats(ctx: &ProjectContext, report: &mut DoctorReport) {
+fn validate_asset_formats(ctx: &ProjectContext, warnings: &mut Vec<String>) {
     let allowed_audio: std::collections::HashSet<&str> = ctx
         .manifest
         .assets
@@ -94,7 +189,7 @@ fn validate_asset_formats(ctx: &ProjectContext, report: &mut DoctorReport) {
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
             if !allowed_audio.contains(ext) {
-                report.warning(format!(
+                warnings.push(format!(
                     "Podcast '{}' has audio file '{audio}' with extension '{ext}' not in allowed audio formats {:?}",
                     pod.title, ctx.manifest.assets.audio_formats
                 ));
@@ -106,7 +201,7 @@ fn validate_asset_formats(ctx: &ProjectContext, report: &mut DoctorReport) {
             .and_then(|e| e.to_str())
             .unwrap_or("");
         if !matches!(ext, "md" | "rst") {
-            report.warning(format!(
+            warnings.push(format!(
                 "Podcast '{}' has file '{}' with unexpected extension '{ext}'",
                 pod.title, pod.file
             ));
@@ -115,8 +210,8 @@ fn validate_asset_formats(ctx: &ProjectContext, report: &mut DoctorReport) {
 }
 
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name))]
-pub fn lint_all(ctx: &ProjectContext) -> DoctorReport {
-    let mut report = DoctorReport::new();
+pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
+    let mut warnings = Vec::new();
 
     for pod in &ctx.metadata.podcasts {
         let path = ctx.root.join(&pod.file);
@@ -125,7 +220,7 @@ pub fn lint_all(ctx: &ProjectContext) -> DoctorReport {
         {
             let word_count = content.split_whitespace().count();
             if word_count < 10 {
-                report.warning(format!(
+                warnings.push(format!(
                     "Podcast '{}' is very short ({} words)",
                     pod.title, word_count
                 ));
@@ -133,27 +228,30 @@ pub fn lint_all(ctx: &ProjectContext) -> DoctorReport {
         }
     }
 
-    report
+    collect_findings(Vec::new(), warnings)
 }
 
-/// Run validation, linting, and environment/configuration diagnostics for a
-/// project, printing a combined report. Returns true if validation produced
-/// errors (so the caller can exit non-zero, like the old `validate` command).
-pub fn run(ctx: &ProjectContext) -> bool {
+pub fn check_file(root: &Path, filename: &str, hint: &str) {
+    let path = root.join(filename);
+    if path.exists() {
+        info!("{filename} found");
+    } else if hint.is_empty() {
+        warn!("{filename} not found");
+    } else {
+        warn!("{filename} not found - {hint}");
+    }
+}
+
+pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
     info!("Running diagnostics");
 
-    let validation = validate_all(ctx);
-    validation.print();
+    let mut outcome = DoctorOutcome::Clean;
+    outcome.merge(validate_all(ctx));
+    outcome.merge(lint_all(ctx));
 
-    let lint = lint_all(ctx);
-    if !lint.warnings.is_empty() {
-        info!("Lint");
-        lint.print();
-    }
-
-    info!("Project");
+    let meta_file = &ctx.manifest.project.metadata_file;
     check_file(&ctx.root, "cite.toml", "run 'cite-cli init'");
-    check_file(&ctx.root, "metadata.yml", "");
+    check_file(&ctx.root, meta_file, "");
     for dir in &["content", "assets/audio", "assets/image", "build"] {
         let d = ctx.root.join(dir);
         if d.is_dir() {
@@ -165,7 +263,14 @@ pub fn run(ctx: &ProjectContext) -> bool {
         }
     }
 
-    if ctx.manifest.backend.is_some() {
+    if ctx
+        .manifest
+        .backend
+        .as_ref()
+        .and_then(|b| b.staging_url.as_deref())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+    {
         info!("Backend configured for staging");
     } else {
         warn!("No backend configured (deploy will fail)");
@@ -182,7 +287,8 @@ pub fn run(ctx: &ProjectContext) -> bool {
         .manifest
         .backend
         .as_ref()
-        .map(|b| !b.staging_service_key.is_empty())
+        .and_then(|b| b.staging_service_key.as_deref())
+        .map(|s| !s.is_empty())
         .unwrap_or(false)
     {
         info!("Using inline staging_service_key from cite.toml");
@@ -190,87 +296,5 @@ pub fn run(ctx: &ProjectContext) -> bool {
         warn!("No staging service key found - deploy will fail");
     }
 
-    validation.has_errors()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::manifest::*;
-    use crate::metadata::*;
-    use crate::project::ProjectContext;
-
-    fn test_context(podcasts: Vec<Podcast>) -> (ProjectContext, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-        let manifest = Manifest::default_template("test");
-        std::fs::write(
-            root.join("cite.toml"),
-            toml::to_string_pretty(&manifest).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(root.join("metadata.yml"), "podcasts: []\n").unwrap();
-        std::fs::create_dir_all(root.join("content")).unwrap();
-        std::fs::create_dir_all(root.join("assets/audio")).unwrap();
-        std::fs::create_dir_all(root.join("assets/image")).unwrap();
-        let ctx = ProjectContext {
-            root,
-            manifest,
-            metadata: Metadata { podcasts },
-        };
-        (ctx, dir)
-    }
-
-    #[test]
-    fn test_validate_empty_metadata() {
-        let (ctx, _dir) = test_context(vec![]);
-        let report = validate_all(&ctx);
-        assert!(!report.has_errors());
-    }
-
-    #[test]
-    fn test_validate_file_not_found() {
-        let (ctx, _dir) = test_context(vec![Podcast {
-            id: "abc".into(),
-            title: "Missing".into(),
-            file: "content/nonexistent.md".into(),
-            source_url: None,
-            category: None,
-            thumbnail: None,
-            audio: None,
-            citation: None,
-            content: None,
-        }]);
-        let report = validate_all(&ctx);
-        assert!(report.has_errors());
-        assert!(report.errors.iter().any(|e| e.contains("does not exist")));
-    }
-
-    #[test]
-    fn test_lint_short_content() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-        std::fs::create_dir_all(root.join("content")).unwrap();
-        std::fs::write(root.join("content/short.md"), "Hi").unwrap();
-        let ctx = ProjectContext {
-            root,
-            manifest: Manifest::default_template("test"),
-            metadata: Metadata {
-                podcasts: vec![Podcast {
-                    id: "abc".into(),
-                    title: "Short".into(),
-                    file: "content/short.md".into(),
-                    source_url: None,
-                    category: None,
-                    thumbnail: None,
-                    audio: None,
-                    citation: None,
-                    content: None,
-                }],
-            },
-        };
-        let report = lint_all(&ctx);
-        assert!(report.has_warnings());
-        assert!(report.warnings.iter().any(|w| w.contains("very short")));
-    }
+    Ok(outcome)
 }

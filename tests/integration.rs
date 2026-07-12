@@ -42,8 +42,6 @@ impl ProjectHarness {
         (stdout, stderr, output.status.success())
     }
 
-
-
     fn ok(args: &[&str]) {
         let (_, stderr, ok) = Self::output(args);
         assert!(ok, "cite-cli {} failed: {stderr}", args.join(" "));
@@ -305,7 +303,9 @@ fn build_empty_project_succeeds() {
     let h = ProjectHarness::new("empty-build");
     h.run_ok(&["build"]);
     let bundle = h.read_bundle();
-    assert!(bundle["podcasts"].as_array().unwrap().is_empty());
+    let pods = bundle["podcasts"].as_array().unwrap();
+    assert_eq!(pods.len(), 1, "template includes one default podcast");
+    assert!(pods[0]["content"].is_null(), "no content since no file set");
 }
 
 #[test]

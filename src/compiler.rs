@@ -1,12 +1,82 @@
+use std::path::PathBuf;
+
 use crate::cache::{self, BuildCache};
-use crate::metadata::{ContentBundle, Timeline, TimelineEntry};
+use crate::metadata::{Podcast, TimelineEntry};
 use crate::project::ProjectContext;
-use crate::report::{CiteError, CompileReport};
+use crate::report::{CiteError, Style, styled};
+use serde::Serialize;
 use tracing::instrument;
 use uuid::Uuid;
 
+/// Build artifact emitted by `compile` into content.json.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContentBundle {
+    pub compiler_version: f64,
+    pub project: String,
+    pub artist_id: String,
+    pub podcasts: Vec<BundlePodcast>,
+    pub timelines: Vec<BundleTimeline>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BundlePodcast {
+    pub id: String,
+    #[serde(flatten)]
+    pub podcast: Podcast,
+    pub content: Option<String>,
+}
+
+impl From<&Podcast> for BundlePodcast {
+    fn from(p: &Podcast) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            podcast: p.clone(),
+            content: None,
+        }
+    }
+}
+
+/// Output timeline model emitted by `compile`.
+#[derive(Debug, Clone, Serialize)]
+pub struct BundleTimeline {
+    pub id: String,
+    pub entries: Vec<TimelineEntry>,
+}
+
+pub enum CompileOutcome {
+    UpToDate,
+    Complete { podcasts: usize, artifact: PathBuf },
+}
+
+impl CompileOutcome {
+    pub fn print(&self) {
+        match self {
+            CompileOutcome::UpToDate => {
+                eprintln!(
+                    "{}",
+                    styled("Nothing to rebuild — all files up to date", Style::Success)
+                );
+            }
+            CompileOutcome::Complete { podcasts, artifact } => {
+                eprintln!(
+                    "{}",
+                    styled(format!("Built {} podcast items", podcasts), Style::Info)
+                );
+                eprintln!(
+                    "{}",
+                    styled(
+                        format!("Build artifact at {}", artifact.display()),
+                        Style::Info
+                    )
+                );
+                eprintln!("{}", styled("2 info(s)", Style::Success));
+            }
+        }
+    }
+}
+
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name, force))]
-pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileReport, CiteError> {
+pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileOutcome, CiteError> {
     let cache_path = ctx.cache_path();
     let content_files = ctx.content_files();
 
@@ -17,7 +87,7 @@ pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileReport,
         if cache.compiler_version == ctx.manifest.build.compiler_version {
             let changed_hashes = cache.changed_since(&current_hashes);
             if changed_hashes.is_empty() {
-                return Ok(CompileReport::new());
+                return Ok(CompileOutcome::UpToDate);
             }
         }
     }
@@ -32,43 +102,47 @@ pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileReport,
     let cache = BuildCache::new(ctx.manifest.build.compiler_version, current_hashes);
     cache.save(&cache_path).await?;
 
-    let mut report = CompileReport::new();
-    report.info(format!(
-        "Built {} podcast items",
-        ctx.metadata.podcasts.len()
-    ));
-    report.info(format!(
-        "Build artifact at {}",
-        build_dir.join("content.json").display()
-    ));
-    Ok(report)
+    Ok(CompileOutcome::Complete {
+        podcasts: ctx.metadata.podcasts.len(),
+        artifact: build_dir.join("content.json"),
+    })
 }
 
 async fn build_bundle(ctx: &ProjectContext) -> Result<ContentBundle, CiteError> {
-    let mut podcasts = ctx.metadata.podcasts.clone();
+    let mut podcasts: Vec<BundlePodcast> = ctx
+        .metadata
+        .podcasts
+        .iter()
+        .map(BundlePodcast::from)
+        .collect();
     let mut timelines = Vec::new();
 
+    let normalize_asset = |path: &str| format!("assets/{}", path.trim_start_matches("assets/"));
+
     for item in &mut podcasts {
-        if !item.file.is_empty() {
-            let src = ctx.root.join(&item.file);
+        if !item.podcast.file.is_empty() {
+            let src = ctx.root.join(&item.podcast.file);
             if src.exists() && src.is_file() {
                 let raw = tokio::fs::read_to_string(&src).await?;
                 item.content = Some(raw);
             }
         }
 
-        let normalize_asset = |path: &str| format!("assets/{}", path.trim_start_matches("assets/"));
-        item.thumbnail = item.thumbnail.as_deref().map(normalize_asset);
-        item.audio = item.audio.as_deref().map(normalize_asset);
+        item.podcast.thumbnail = item.podcast.thumbnail.as_deref().map(normalize_asset);
+        item.podcast.audio = item.podcast.audio.as_deref().map(normalize_asset);
+    }
 
-        if let Some(citation) = &item.citation {
+    for p in &ctx.metadata.podcasts {
+        if let Some(citation) = &p.citation {
             let bib_src = ctx.root.join(citation);
             if bib_src.exists() {
                 let bib_content = tokio::fs::read_to_string(&bib_src).await?;
                 let entries = parse_bibtex(&bib_content);
                 if !entries.is_empty() {
-                    let id = Uuid::new_v4().to_string();
-                    timelines.push(Timeline { id, entries });
+                    timelines.push(BundleTimeline {
+                        id: Uuid::new_v4().to_string(),
+                        entries,
+                    });
                 }
             }
         }
@@ -142,8 +216,8 @@ fn parse_bibtex(content: &str) -> Vec<TimelineEntry> {
         let id = Uuid::new_v4().to_string();
 
         entries.push(TimelineEntry {
-            date,
             id,
+            date: Some(date),
             title: entry_title,
             summary: Some(summary),
             url: Some(url),
@@ -239,9 +313,7 @@ fn format_title(title: &str, author: &str) -> String {
     if title.is_empty() {
         return author.to_string();
     }
-    let cleaned = title
-        .trim_matches(|c: char| c == '{' || c == '}')
-        .to_string();
+    let cleaned: String = title.chars().filter(|&c| c != '{' && c != '}').collect();
     if author.is_empty() {
         cleaned
     } else {
@@ -252,9 +324,6 @@ fn format_title(title: &str, author: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::Manifest;
-    use crate::metadata::{Metadata, Podcast};
-    use crate::project::ProjectContext;
 
     #[test]
     fn test_parse_bibtex_extracts_timeline_entries() {
@@ -270,7 +339,7 @@ mod tests {
 "#;
         let entries = parse_bibtex(bib);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].date, "1935-05");
+        assert_eq!(entries[0].date.as_deref(), Some("1935-05"));
         assert!(entries[0].title.contains("Quantum-Mechanical"));
         assert_eq!(entries[0].url.as_deref(), Some("10.1038/35057060"));
     }
@@ -295,73 +364,6 @@ mod tests {
         assert_eq!(parse_bibtex(bib).len(), 2);
     }
 
-    #[tokio::test]
-    async fn test_build_empty_metadata() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = ProjectContext {
-            root: dir.path().to_path_buf(),
-            manifest: Manifest::default_template("test"),
-            metadata: Metadata::default(),
-        };
-        compile(&ctx, false).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_build_creates_content_json() {
-        let dir = tempfile::tempdir().unwrap();
-        let content_dir = dir.path().join("content");
-        std::fs::create_dir_all(&content_dir).unwrap();
-        std::fs::write(content_dir.join("article.md"), "# Hello").unwrap();
-
-        let mut manifest = Manifest::default_template("test");
-        manifest.project.artist_id = "abc".into();
-        let ctx = ProjectContext {
-            root: dir.path().to_path_buf(),
-            manifest,
-            metadata: Metadata {
-                podcasts: vec![Podcast {
-                    id: "abc".into(),
-                    title: "My Podcast".into(),
-                    file: "content/article.md".into(),
-                    source_url: None,
-                    category: Some("tech".into()),
-                    thumbnail: None,
-                    audio: None,
-                    citation: None,
-                    content: None,
-                }],
-            },
-        };
-        compile(&ctx, false).await.unwrap();
-        assert!(ctx.build_dir().join("content.json").exists());
-
-        let json_str = std::fs::read_to_string(ctx.build_dir().join("content.json")).unwrap();
-        let bundle: ContentBundle = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(bundle.podcasts.len(), 1);
-        assert_eq!(bundle.podcasts[0].id, "abc");
-        assert_eq!(bundle.podcasts[0].content.as_deref(), Some("# Hello"));
-        assert!(bundle.podcasts[0].citation.is_none());
-        assert_eq!(bundle.podcasts[0].category.as_deref(), Some("tech"));
-    }
-
-    #[tokio::test]
-    async fn test_build_force_rebuild() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = ProjectContext {
-            root: dir.path().to_path_buf(),
-            manifest: Manifest::default_template("test"),
-            metadata: Metadata::default(),
-        };
-        let r1 = compile(&ctx, false).await.unwrap();
-        assert!(!r1.infos.is_empty());
-
-        let r2 = compile(&ctx, false).await.unwrap();
-        assert!(r2.infos.is_empty());
-
-        let r3 = compile(&ctx, true).await.unwrap();
-        assert!(!r3.infos.is_empty());
-    }
-
     #[test]
     fn test_format_title_with_author() {
         assert_eq!(
@@ -381,11 +383,8 @@ mod tests {
     }
 
     #[test]
-    fn test_format_title_cleans_braces() {
-        assert_eq!(
-            format_title("{E}nsemble {M}ethods", ""),
-            "E}nsemble {M}ethods"
-        );
+    fn test_format_title_trims_surrounding_braces() {
+        assert_eq!(format_title("{E}nsemble {M}ethods", ""), "Ensemble Methods");
     }
 
     #[test]

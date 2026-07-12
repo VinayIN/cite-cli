@@ -29,7 +29,7 @@ cargo build --release
 ```bash
 cite-cli init my-project
 # edit metadata.yml and add content files
-cite-cli validate --path my-project
+cite-cli doctor --path my-project
 cite-cli build --path my-project
 cite-cli status --path my-project
 cite-cli deploy --path my-project
@@ -44,16 +44,18 @@ cargo test
 ## Commands
 
 | Command | Description |
-|---|---|
+|---|---|---|
 | `init <name>` | Scaffold a new project |
-| `validate` | Check structure, metadata, file existence |
-| `lint` | Word counts and content quality checks |
+| `doctor` | Validate structure, metadata, file existence, asset formats, and config |
+| `lint` | Word count checks |
 | `build` | Incremental build -> `build/content.json` |
 | `deploy` | Deploy to Supabase (full JSON to storage + table subset) |
 | `status` | Project health overview |
-| `doctor` | Diagnose config and structure issues |
 | `clean` | Remove build artifacts and cache |
 | `rollback <id>` | Undo a deployment by ID |
+| `login` | Authenticate with Supabase for user-scoped deploys |
+| `upgrade` | Self-update to the latest GitHub release |
+| `uninstall` | Remove cite-cli binary and clean shell config |
 
 All commands accept `--path <dir>` to target a specific directory.
 Without `--path`, projects are auto-discovered in the current directory and subdirectories.
