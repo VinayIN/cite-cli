@@ -42,6 +42,8 @@ impl ProjectHarness {
         (stdout, stderr, output.status.success())
     }
 
+
+
     fn ok(args: &[&str]) {
         let (_, stderr, ok) = Self::output(args);
         assert!(ok, "cite-cli {} failed: {stderr}", args.join(" "));
@@ -99,7 +101,7 @@ fn init_is_idempotent_on_existing_project() {
         ProjectHarness::output(&["init", "--path", h.project.to_str().unwrap(), "existing"]);
     assert!(ok);
     assert!(stderr.contains("ready"));
-    assert!(stderr.contains("skipped"));
+    assert!(stderr.contains("Skipped"));
 }
 
 // ── doctor ────────────────────────────────────────────────────
@@ -296,6 +298,37 @@ podcasts:
         content.contains("[[other-page]]"),
         "wiki-link should remain as-is, got: {content}"
     );
+}
+
+#[test]
+fn build_empty_project_succeeds() {
+    let h = ProjectHarness::new("empty-build");
+    h.run_ok(&["build"]);
+    let bundle = h.read_bundle();
+    assert!(bundle["podcasts"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn build_force_rebuilds() {
+    let h = ProjectHarness::new("force-build");
+    h.write_content("content/a.md", "v1");
+    h.write_metadata(
+        r#"
+podcasts:
+  - title: "A"
+    file: content/a.md
+"#,
+    );
+    h.run_ok(&["build"]);
+    let first = h.read_bundle();
+
+    h.run_ok(&["build", "--force"]);
+    let second = h.read_bundle();
+    assert_eq!(
+        first["podcasts"][0]["content"],
+        second["podcasts"][0]["content"]
+    );
+    assert_eq!(second["compiler_version"], 1.0);
 }
 
 // ── status ──────────────────────────────────────────────────────

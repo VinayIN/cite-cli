@@ -1,5 +1,5 @@
-use crate::error::CiteError;
 use crate::manifest::Manifest;
+use crate::report::CiteError;
 use std::fs;
 use std::path::Path;
 use tracing::instrument;

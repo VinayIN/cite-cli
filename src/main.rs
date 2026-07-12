@@ -3,10 +3,10 @@ mod cli;
 mod compiler;
 mod deploy;
 mod doctor;
-mod error;
 mod manifest;
 mod metadata;
 mod project;
+mod report;
 mod scaffold;
 mod uninstall;
 mod upgrade;
@@ -32,6 +32,7 @@ async fn main() {
         .with_target(false)
         .with_level(true)
         .without_time()
+        .with_writer(std::io::stderr)
         .init();
 
     info!("cite-cli v{}", env!("CARGO_PKG_VERSION"));

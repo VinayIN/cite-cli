@@ -1,13 +1,12 @@
-use crate::error::CiteError;
 use crate::manifest::BackendConfig;
 use crate::project::ProjectContext;
-use colored::Colorize;
+use crate::report::{CiteError, Style, styled};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::RequestBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
-use tracing::instrument;
+use tracing::{info, instrument, warn};
 use uuid::Uuid;
 
 const STORAGE_BUCKET: &str = "assets";
@@ -131,22 +130,14 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
         .trim()
         .to_string();
 
-    eprintln!(
-        "{}",
-        format!("Deploying with deployment_id: {deployment_id}")
-            .cyan()
-            .bold()
-    );
+    info!("Deploying: {deployment_id}");
 
     if dry_run {
-        eprintln!("{}", "  DRY RUN - no data will be sent".yellow().bold());
-        eprintln!("{}", format!("  Podcast items: {}", podcasts.len()).cyan());
-        eprintln!(
-            "{}",
-            format!("  Timeline groups: {}", timelines.len()).cyan()
-        );
+        warn!("DRY RUN - no data will be sent");
+        info!("Podcast items: {}", podcasts.len());
+        info!("Timeline groups: {}", timelines.len());
         if !artist_id.is_empty() {
-            eprintln!("{}", format!("  Artist ID: {artist_id}").cyan());
+            info!("Artist ID: {artist_id}");
         }
         return Ok(());
     }
@@ -178,15 +169,21 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
 
     let public_bundle_url =
         upload_bytes(&dctx, &storage_path, &bundle_bytes, "application/json").await?;
-    eprintln!("  Uploaded bundle to {}", public_bundle_url.cyan());
+    info!("Uploaded bundle to {public_bundle_url}");
 
     persist_deployment_record(ctx, &record).await?;
 
+    let podcast_count = record.news_ids.len();
+    let timeline_count = record.timeline_ids.len();
+    let asset_count = record.asset_paths.len();
     eprintln!(
         "{}",
-        format!("Deployment complete (id: {deployment_id})")
-            .green()
-            .bold()
+        styled(
+            format!(
+                "Deployed {podcast_count} podcast(s), {timeline_count} timeline(s), {asset_count} asset(s)"
+            ),
+            Style::Success,
+        )
     );
 
     Ok(())
@@ -224,6 +221,7 @@ async fn deploy_podcast(
     let mut asset_paths = Vec::new();
 
     let news_id = insert_news_row(dctx, title, content, category_id, url_id, None).await?;
+    info!("Created news item: {title} (id={news_id})");
     ensure_artist_link(dctx, artist_id, news_id).await?;
     ensure_metric_row(dctx, news_id).await?;
 
@@ -237,6 +235,7 @@ async fn deploy_podcast(
     .await?
     {
         update_news_thumbnail(dctx, news_id, &asset.public_url).await?;
+        info!("Uploaded thumbnail: {}", asset.storage_path);
         asset_paths.push(asset.storage_path);
     }
 
@@ -244,6 +243,7 @@ async fn deploy_podcast(
         upload_optional_asset(dctx, podcast.get("audio").and_then(|v| v.as_str()), "audio").await?
     {
         insert_podcast_row(dctx, news_id, title, &audio.public_url, plan_id).await?;
+        info!("Created podcast: {title}");
         asset_paths.push(audio.storage_path);
     }
 
@@ -301,12 +301,12 @@ async fn deploy_timelines_for_news(
             )
             .await?;
             timeline_ids.push(timeline_id);
-            eprintln!("  Deployed timeline entry: {}", title.cyan());
+            info!("Deployed timeline entry: {title}");
         }
     }
 
     if !timeline_ids.is_empty() {
-        eprintln!("  Linked {} timeline entries", timeline_ids.len());
+        info!("Linked {} timeline entries", timeline_ids.len());
     }
     Ok(timeline_ids)
 }
@@ -379,45 +379,37 @@ pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<(), C
     })?;
     let dctx = build_context(ctx, backend, ctx.manifest.project.name.clone(), artist_id)?;
 
-    eprintln!(
-        "{}",
-        format!("Rolling back deployment: {deployment_id}")
-            .yellow()
-            .bold()
-    );
+    warn!("Rolling back deployment: {deployment_id}");
 
     for timeline_id in &record.timeline_ids {
         delete_row_by_id(&dctx, "timeline", *timeline_id).await?;
-        eprintln!("  Cleared timeline {timeline_id}");
+        info!("Cleared timeline {timeline_id}");
     }
 
     for news_id in &record.news_ids {
         delete_row_by_id(&dctx, "news", *news_id).await?;
-        eprintln!("  Cleared news {news_id}");
+        info!("Cleared news {news_id}");
     }
 
     for asset_path in &record.asset_paths {
         if let Err(e) = delete_storage_object(&dctx, asset_path).await {
-            eprintln!("  {} {e}", "warning:".yellow().bold());
+            warn!("Failed to delete asset {asset_path}: {e}");
         } else {
-            eprintln!("  Cleared asset {asset_path}");
+            info!("Cleared asset {asset_path}");
         }
     }
 
     if let Err(e) = delete_storage_object(&dctx, &record.storage_path).await {
-        eprintln!("  {} {e}", "warning:".yellow().bold());
+        warn!("Failed to delete storage: {e}");
     } else {
-        eprintln!("  Cleared storage object");
+        info!("Cleared storage object");
     }
 
     if let Err(e) = tokio::fs::remove_file(&record_path).await {
-        eprintln!(
-            "  {} Failed to remove local deployment record: {e}",
-            "warning:".yellow().bold()
-        );
+        warn!("Failed to remove local deployment record: {e}");
     }
 
-    eprintln!("{}", "Rollback complete".green().bold());
+    eprintln!("{}", styled("Rollback complete", Style::Success));
     Ok(())
 }
 
@@ -532,34 +524,37 @@ pub async fn login(
         email: email.clone(),
     };
     save_session(&session)?;
-    eprintln!("{}", format!("Logged in as {email}").green().bold());
+    eprintln!(
+        "{}",
+        styled(format!("Logged in as {email}"), Style::Success)
+    );
 
     match fetch_user_artists(backend, &token.access_token).await {
         Ok(artists) if artists.is_empty() => {
-            eprintln!("{}", "No artist linked to this account.".yellow().bold());
+            eprintln!(
+                "{}",
+                styled("No artist linked to this account.", Style::Warning)
+            );
             match prompt_create_artist(backend, &token.access_token).await? {
                 Some((id, name)) => {
                     eprintln!(
                         "{}",
-                        format!("Created artist '{name}' ({id})").green().bold()
+                        styled(format!("Created artist '{name}' ({id})"), Style::Success)
                     );
                 }
                 None => {
-                    eprintln!("  Skipped artist creation");
+                    info!("Skipped artist creation");
                 }
             }
         }
         Ok(artists) => {
-            eprintln!("  Associated artist(s):");
+            info!("Associated artist(s):");
             for (id, name) in &artists {
-                eprintln!("    - {name} ({id})");
+                info!("  - {name} ({id})");
             }
         }
         Err(e) => {
-            eprintln!(
-                "  {} Could not fetch artists: {e}",
-                "warning:".yellow().bold()
-            );
+            warn!("Could not fetch artists: {e}");
         }
     }
 
@@ -1024,6 +1019,7 @@ async fn upload_bytes(
     ensure_success(response, format!("Failed to upload {storage_path}")).await?;
 
     let public_url = format!("{base_url}/storage/v1/object/public/{STORAGE_BUCKET}/{storage_path}");
+    info!("Uploaded {storage_path}");
     Ok(public_url)
 }
 

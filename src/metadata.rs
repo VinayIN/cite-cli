@@ -165,10 +165,9 @@ podcasts:
 
     #[test]
     fn test_content_files_includes_all() {
-        let id = get_uuid();
         let meta = Metadata {
             podcasts: vec![Podcast {
-                id: id.clone(),
+                id: "abc".into(),
                 title: "P".into(),
                 file: "content/p.md".into(),
                 source_url: None,
@@ -179,7 +178,6 @@ podcasts:
                 content: None,
             }],
         };
-        assert_eq!(meta.podcasts[0].id, id.clone());
 
         let files = meta.content_files();
         assert_eq!(files.len(), 3);

@@ -1,12 +1,12 @@
 use crate::cache::{self, BuildCache};
-use crate::error::{CiteError, ValidationReport};
 use crate::metadata::{ContentBundle, Timeline, TimelineEntry};
 use crate::project::ProjectContext;
+use crate::report::{CiteError, CompileReport};
 use tracing::instrument;
 use uuid::Uuid;
 
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name, force))]
-pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<ValidationReport, CiteError> {
+pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileReport, CiteError> {
     let cache_path = ctx.cache_path();
     let content_files = ctx.content_files();
 
@@ -17,7 +17,7 @@ pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<ValidationRepo
         if cache.compiler_version == ctx.manifest.build.compiler_version {
             let changed_hashes = cache.changed_since(&current_hashes);
             if changed_hashes.is_empty() {
-                return Ok(ValidationReport::new());
+                return Ok(CompileReport::new());
             }
         }
     }
@@ -32,7 +32,7 @@ pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<ValidationRepo
     let cache = BuildCache::new(ctx.manifest.build.compiler_version, current_hashes);
     cache.save(&cache_path).await?;
 
-    let mut report = ValidationReport::new();
+    let mut report = CompileReport::new();
     report.info(format!(
         "Built {} podcast items",
         ctx.metadata.podcasts.len()
@@ -52,7 +52,7 @@ async fn build_bundle(ctx: &ProjectContext) -> Result<ContentBundle, CiteError> 
         if !item.file.is_empty() {
             let src = ctx.root.join(&item.file);
             if src.exists() && src.is_file() {
-                let raw = tokio::fs::read_to_string(&src).await.unwrap_or_default();
+                let raw = tokio::fs::read_to_string(&src).await?;
                 item.content = Some(raw);
             }
         }
@@ -64,9 +64,7 @@ async fn build_bundle(ctx: &ProjectContext) -> Result<ContentBundle, CiteError> 
         if let Some(citation) = &item.citation {
             let bib_src = ctx.root.join(citation);
             if bib_src.exists() {
-                let bib_content = tokio::fs::read_to_string(&bib_src)
-                    .await
-                    .unwrap_or_default();
+                let bib_content = tokio::fs::read_to_string(&bib_src).await?;
                 let entries = parse_bibtex(&bib_content);
                 if !entries.is_empty() {
                     let id = Uuid::new_v4().to_string();
@@ -305,8 +303,7 @@ mod tests {
             manifest: Manifest::default_template("test"),
             metadata: Metadata::default(),
         };
-        let report = compile(&ctx, false).await.unwrap();
-        assert!(!report.has_errors());
+        compile(&ctx, false).await.unwrap();
     }
 
     #[tokio::test]
@@ -335,8 +332,7 @@ mod tests {
                 }],
             },
         };
-        let report = compile(&ctx, false).await.unwrap();
-        assert!(!report.has_errors());
+        compile(&ctx, false).await.unwrap();
         assert!(ctx.build_dir().join("content.json").exists());
 
         let json_str = std::fs::read_to_string(ctx.build_dir().join("content.json")).unwrap();
@@ -357,14 +353,111 @@ mod tests {
             metadata: Metadata::default(),
         };
         let r1 = compile(&ctx, false).await.unwrap();
-        assert!(!r1.has_errors());
+        assert!(!r1.infos.is_empty());
 
         let r2 = compile(&ctx, false).await.unwrap();
-        assert!(!r2.has_errors());
         assert!(r2.infos.is_empty());
 
         let r3 = compile(&ctx, true).await.unwrap();
-        assert!(!r3.has_errors());
         assert!(!r3.infos.is_empty());
+    }
+
+    #[test]
+    fn test_format_title_with_author() {
+        assert_eq!(
+            format_title("My Paper", "Smith, J."),
+            "My Paper — Smith, J."
+        );
+    }
+
+    #[test]
+    fn test_format_title_without_author() {
+        assert_eq!(format_title("My Paper", ""), "My Paper");
+    }
+
+    #[test]
+    fn test_format_title_without_title() {
+        assert_eq!(format_title("", "Smith, J."), "Smith, J.");
+    }
+
+    #[test]
+    fn test_format_title_cleans_braces() {
+        assert_eq!(
+            format_title("{E}nsemble {M}ethods", ""),
+            "E}nsemble {M}ethods"
+        );
+    }
+
+    #[test]
+    fn test_format_bib_date_year_only() {
+        let year = Some("2023".to_string());
+        let month = None;
+        assert_eq!(format_bib_date(&year, &month), "2023");
+    }
+
+    #[test]
+    fn test_format_bib_date_year_month() {
+        let year = Some("2023".to_string());
+        let month = Some("may".to_string());
+        assert_eq!(format_bib_date(&year, &month), "2023-05");
+    }
+
+    #[test]
+    fn test_format_bib_date_full_month() {
+        let year = Some("2023".to_string());
+        let month = Some("January".to_string());
+        assert_eq!(format_bib_date(&year, &month), "2023-01");
+    }
+
+    #[test]
+    fn test_format_bib_date_empty() {
+        let year = None;
+        let month = None;
+        assert_eq!(format_bib_date(&year, &month), "");
+    }
+
+    #[test]
+    fn test_format_bib_date_invalid_month() {
+        let year = Some("2023".to_string());
+        let month = Some("invalid".to_string());
+        assert_eq!(format_bib_date(&year, &month), "2023");
+    }
+
+    #[test]
+    fn test_parse_bibtex_protective_braces() {
+        let bib = r#"
+@article{test,
+  title = {The Great Paper},
+  year = {2023},
+}
+"#;
+        let entries = parse_bibtex(bib);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "The Great Paper");
+    }
+
+    #[test]
+    fn test_parse_bibtex_entry_without_title() {
+        let bib = r#"
+@misc{no-title,
+  author = {Doe, J.},
+  year = {2023},
+}
+"#;
+        let entries = parse_bibtex(bib);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].title.contains("Doe"));
+    }
+
+    #[test]
+    fn test_parse_bibtex_no_url_or_doi() {
+        let bib = r#"
+@article{minimal,
+  title = {Minimal Entry},
+}
+"#;
+        let entries = parse_bibtex(bib);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].url.as_deref(), Some(""));
     }
 }

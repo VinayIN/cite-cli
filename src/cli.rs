@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
-use tracing::debug;
+use tracing::{debug, info, warn};
 
-use crate::error::CiteError;
+use crate::report::{CiteError, Style, check_file, styled};
 use crate::{compiler, deploy, doctor, project, scaffold, uninstall, upgrade};
 
 #[derive(Parser)]
@@ -121,22 +121,21 @@ fn discover_projects(path: Option<String>) -> Vec<PathBuf> {
 fn load_projects(
     path: Option<String>,
     empty_msg: &str,
-) -> Result<Option<(Vec<project::ProjectContext>, bool)>, CiteError> {
+) -> Result<Option<Vec<project::ProjectContext>>, CiteError> {
     let roots = discover_projects(path);
     if roots.is_empty() {
-        eprintln!("{empty_msg}");
+        warn!("{empty_msg}");
         return Ok(None);
     }
-    let multi = roots.len() > 1;
     let mut projects = Vec::with_capacity(roots.len());
     for root in &roots {
         projects.push(load_project(root)?);
     }
-    Ok(Some((projects, multi)))
+    Ok(Some(projects))
 }
 
 fn print_project_header(name: &str) {
-    eprintln!("── {} ──", name);
+    info!("── {name} ──");
 }
 
 impl Command {
@@ -152,29 +151,29 @@ impl Command {
                 let report = scaffold::init_project(&name, &root)?;
 
                 for d in &report.directories_created {
-                    eprintln!("  {} (created)", d);
+                    info!("Created directory: {d}");
                 }
                 for f in &report.files_created {
-                    eprintln!("  {} (created)", f);
+                    info!("Created file: {f}");
                 }
                 for f in &report.files_skipped {
-                    eprintln!("  {} (skipped)", f);
+                    info!("Skipped: {f}");
                 }
                 eprintln!(
                     "{}",
-                    doctor::styled(
+                    styled(
                         format!("Project '{name}' ready at {}", root.display()),
-                        doctor::Style::Success
+                        Style::Success,
                     )
                 );
                 Ok(())
             }
             Command::Lint { path } => {
-                let Some((projects, multi)) =
-                    load_projects(path, "No projects found (no cite.toml found)")?
+                let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
                 };
+                let multi = projects.len() > 1;
                 for ctx in &projects {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
@@ -185,11 +184,11 @@ impl Command {
                 Ok(())
             }
             Command::Build { path, force } => {
-                let Some((projects, multi)) =
-                    load_projects(path, "No projects found (no cite.toml found)")?
+                let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
                 };
+                let multi = projects.len() > 1;
                 let mut has_errors = false;
                 for ctx in &projects {
                     if multi {
@@ -198,16 +197,13 @@ impl Command {
                     match compiler::compile(ctx, force).await {
                         Ok(report) => report.print(),
                         Err(e) => {
-                            eprintln!(
-                                "{}",
-                                doctor::styled(format!("Build failed: {e}"), doctor::Style::Error)
-                            );
+                            warn!("Build failed: {e}");
                             has_errors = true;
                         }
                     }
                 }
                 if has_errors {
-                    Err(CiteError::Deploy(
+                    Err(CiteError::Validation(
                         "Build failed in one or more projects".to_string(),
                     ))
                 } else {
@@ -215,21 +211,18 @@ impl Command {
                 }
             }
             Command::Deploy { path, dry_run } => {
-                let Some((projects, multi)) =
-                    load_projects(path, "No projects found (no cite.toml found)")?
+                let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
                 };
+                let multi = projects.len() > 1;
                 let mut has_errors = false;
                 for ctx in &projects {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
                     }
                     if let Err(e) = deploy::deploy(ctx, dry_run).await {
-                        eprintln!(
-                            "{}",
-                            doctor::styled(format!("Deploy failed: {e}"), doctor::Style::Error)
-                        );
+                        warn!("Deploy failed: {e}");
                         has_errors = true;
                     }
                 }
@@ -242,17 +235,15 @@ impl Command {
                 }
             }
             Command::Status { path } => {
-                let Some((projects, multi)) = load_projects(path, "No projects found")? else {
+                let Some(projects) = load_projects(path, "No projects found")? else {
                     return Ok(());
                 };
+                let multi = projects.len() > 1;
                 for ctx in &projects {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
                     } else {
-                        eprintln!(
-                            "{}",
-                            doctor::styled("Project Status", doctor::Style::Header)
-                        );
+                        eprintln!("{}", styled("Project Status", Style::Header));
                     }
                     eprintln!("  Name: {}", ctx.manifest.project.name);
                     eprintln!("  Project Root: {}", ctx.root.display());
@@ -263,10 +254,7 @@ impl Command {
                     eprintln!("  Podcasts: {}", ctx.metadata.podcasts.len());
                     let build_path = ctx.build_dir().join("content.json");
                     if build_path.exists() {
-                        eprintln!(
-                            "  Build: {}",
-                            doctor::styled("exists", doctor::Style::Success)
-                        );
+                        eprintln!("  Build: {}", styled("exists", Style::Success));
                         if let Ok(meta) = std::fs::metadata(&build_path)
                             && let Ok(modified) = meta.modified()
                             && let Ok(elapsed) = modified.elapsed()
@@ -289,15 +277,13 @@ impl Command {
             }
             Command::Doctor { path } => {
                 let root = resolve_path(path.clone());
-                let Some((projects, multi)) = load_projects(path, "")? else {
-                    eprintln!(
-                        "{}",
-                        doctor::styled("Running diagnostics", doctor::Style::Header)
-                    );
-                    doctor::check_file(&root, "cite.toml", "run 'cite-cli init'");
-                    doctor::check_file(&root, "metadata.yml", "");
+                let Some(projects) = load_projects(path, "")? else {
+                    info!("Running diagnostics");
+                    check_file(&root, "cite.toml", "run 'cite-cli init'");
+                    check_file(&root, "metadata.yml", "");
                     return Ok(());
                 };
+                let multi = projects.len() > 1;
                 for ctx in &projects {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
@@ -311,18 +297,16 @@ impl Command {
                 Ok(())
             }
             Command::Clean { path } => {
-                let Some((projects, multi)) = load_projects(path, "No projects found")? else {
+                let Some(projects) = load_projects(path, "No projects found")? else {
                     return Ok(());
                 };
+                let multi = projects.len() > 1;
                 for ctx in &projects {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
                     }
                     ctx.clean()?;
-                    eprintln!(
-                        "{}",
-                        doctor::styled("Cleaned build artifacts", doctor::Style::Success)
-                    );
+                    eprintln!("{}", styled("Cleaned build artifacts", Style::Success));
                 }
                 Ok(())
             }

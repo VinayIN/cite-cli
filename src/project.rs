@@ -1,6 +1,6 @@
-use crate::error::CiteError;
 use crate::manifest::Manifest;
 use crate::metadata::Metadata;
+use crate::report::CiteError;
 use std::path::{Path, PathBuf};
 use tracing::instrument;
 

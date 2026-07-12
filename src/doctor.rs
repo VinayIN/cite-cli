@@ -1,12 +1,11 @@
-use crate::error::ValidationReport;
 use crate::project::ProjectContext;
-use colored::Colorize;
+use crate::report::{DoctorReport, check_file};
 use std::path::Path;
-use tracing::instrument;
+use tracing::{info, instrument, warn};
 
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name))]
-pub fn validate_all(ctx: &ProjectContext) -> ValidationReport {
-    let mut report = ValidationReport::new();
+pub fn validate_all(ctx: &ProjectContext) -> DoctorReport {
+    let mut report = DoctorReport::new();
 
     validate_project_structure(ctx, &mut report);
     validate_file_existence(ctx, &mut report);
@@ -15,7 +14,7 @@ pub fn validate_all(ctx: &ProjectContext) -> ValidationReport {
     report
 }
 
-fn validate_project_structure(ctx: &ProjectContext, report: &mut ValidationReport) {
+fn validate_project_structure(ctx: &ProjectContext, report: &mut DoctorReport) {
     let required = [
         ("cite.toml", ctx.root.join("cite.toml")),
         (
@@ -47,7 +46,7 @@ fn validate_project_structure(ctx: &ProjectContext, report: &mut ValidationRepor
     }
 }
 
-fn validate_file_existence(ctx: &ProjectContext, report: &mut ValidationReport) {
+fn validate_file_existence(ctx: &ProjectContext, report: &mut DoctorReport) {
     for pod in &ctx.metadata.podcasts {
         let path = ctx.root.join(&pod.file);
         if !path.exists() {
@@ -79,7 +78,7 @@ fn validate_file_existence(ctx: &ProjectContext, report: &mut ValidationReport) 
     }
 }
 
-fn validate_asset_formats(ctx: &ProjectContext, report: &mut ValidationReport) {
+fn validate_asset_formats(ctx: &ProjectContext, report: &mut DoctorReport) {
     let allowed_audio: std::collections::HashSet<&str> = ctx
         .manifest
         .assets
@@ -116,8 +115,8 @@ fn validate_asset_formats(ctx: &ProjectContext, report: &mut ValidationReport) {
 }
 
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name))]
-pub fn lint_all(ctx: &ProjectContext) -> ValidationReport {
-    let mut report = ValidationReport::new();
+pub fn lint_all(ctx: &ProjectContext) -> DoctorReport {
+    let mut report = DoctorReport::new();
 
     for pod in &ctx.metadata.podcasts {
         let path = ctx.root.join(&pod.file);
@@ -137,87 +136,47 @@ pub fn lint_all(ctx: &ProjectContext) -> ValidationReport {
     report
 }
 
-pub enum Style {
-    Success,
-    Error,
-    Warning,
-    Header,
-}
-
-pub fn styled(msg: impl AsRef<str>, style: Style) -> String {
-    let s = msg.as_ref();
-    match style {
-        Style::Success => format!("  {}", s.green().bold()),
-        Style::Error => format!("  {}", s.red().bold()),
-        Style::Warning => format!("  {}", s.yellow().bold()),
-        Style::Header => s.bold().underline().to_string(),
-    }
-}
-
-pub fn check_file(root: &Path, filename: &str, hint: &str) {
-    let path = root.join(filename);
-    if path.exists() {
-        eprintln!("{}", styled(format!("{filename} found"), Style::Success));
-    } else if hint.is_empty() {
-        eprintln!("{}", styled(format!("{filename} not found"), Style::Error));
-    } else {
-        eprintln!(
-            "{}",
-            styled(format!("{filename} not found - {hint}"), Style::Error)
-        );
-    }
-}
-
 /// Run validation, linting, and environment/configuration diagnostics for a
 /// project, printing a combined report. Returns true if validation produced
 /// errors (so the caller can exit non-zero, like the old `validate` command).
 pub fn run(ctx: &ProjectContext) -> bool {
-    eprintln!("{}", styled("Running diagnostics", Style::Header));
+    info!("Running diagnostics");
 
     let validation = validate_all(ctx);
     validation.print();
 
     let lint = lint_all(ctx);
-    if !lint.warnings.is_empty() || !lint.infos.is_empty() {
-        eprintln!("{}", styled("Lint", Style::Header));
+    if !lint.warnings.is_empty() {
+        info!("Lint");
         lint.print();
     }
 
-    eprintln!("{}", styled("Project", Style::Header));
+    info!("Project");
     check_file(&ctx.root, "cite.toml", "run 'cite-cli init'");
     check_file(&ctx.root, "metadata.yml", "");
     for dir in &["content", "assets/audio", "assets/image", "build"] {
         let d = ctx.root.join(dir);
         if d.is_dir() {
-            eprintln!("{}", styled(format!("{dir}/ exists"), Style::Success));
+            info!("{dir}/ exists");
         } else if *dir == "build" {
-            eprintln!("  {dir}/ missing (created by build)");
+            info!("{dir}/ missing (created by build)");
         } else {
-            eprintln!("  {dir}/ missing (will be created on init)");
+            info!("{dir}/ missing (will be created on init)");
         }
     }
 
     if ctx.manifest.backend.is_some() {
-        eprintln!(
-            "{}",
-            styled("Backend configured for staging", Style::Success)
-        );
+        info!("Backend configured for staging");
     } else {
-        eprintln!("  No backend configured (deploy will fail)");
+        warn!("No backend configured (deploy will fail)");
     }
     if ctx.manifest.build.incremental {
-        eprintln!("{}", styled("Incremental builds enabled", Style::Success));
+        info!("Incremental builds enabled");
     }
     if ctx.manifest.project.artist_id.is_empty() {
-        eprintln!(
-            "{}",
-            styled(
-                "Artist ID is empty - set it in [project] in cite.toml",
-                Style::Warning
-            )
-        );
+        warn!("Artist ID is empty - set it in [project] in cite.toml");
     } else {
-        eprintln!("  Artist ID: {}", ctx.manifest.project.artist_id);
+        info!("Artist ID: {}", ctx.manifest.project.artist_id);
     }
     if ctx
         .manifest
@@ -226,15 +185,9 @@ pub fn run(ctx: &ProjectContext) -> bool {
         .map(|b| !b.staging_service_key.is_empty())
         .unwrap_or(false)
     {
-        eprintln!("  Using inline staging_service_key from cite.toml");
+        info!("Using inline staging_service_key from cite.toml");
     } else {
-        eprintln!(
-            "{}",
-            styled(
-                "No staging service key found - deploy will fail",
-                Style::Warning
-            )
-        );
+        warn!("No staging service key found - deploy will fail");
     }
 
     validation.has_errors()
