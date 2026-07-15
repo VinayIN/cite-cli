@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::PathBuf;
 
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -490,7 +491,8 @@ pub async fn login(
     let email = match email {
         Some(e) => e,
         None => {
-            info!("Email: ");
+            print!("Email: ");
+            let _ = std::io::stdout().flush();
             let mut s = String::new();
             std::io::stdin().read_line(&mut s)?;
             s.trim().to_string()
@@ -499,7 +501,8 @@ pub async fn login(
     let password = match password {
         Some(p) => p,
         None => {
-            info!("Password: ");
+            print!("Password: ");
+            let _ = std::io::stdout().flush();
             let mut s = String::new();
             std::io::stdin().read_line(&mut s)?;
             s.trim().to_string()
@@ -546,7 +549,7 @@ pub async fn login(
 
     match fetch_user_artists(backend, &token.access_token).await {
         Ok(artists) if artists.is_empty() => {
-            warn!("No artist linked to this account.");
+            warn!("No artist linked to this account");
             match prompt_create_artist(backend, &token.access_token).await? {
                 Some((id, name)) => {
                     info!("Created artist '{name}' ({id})");
@@ -607,7 +610,8 @@ async fn fetch_user_artists(
 }
 
 fn prompt_line(label: &str) -> Result<String, CiteError> {
-    info!("{label}");
+    print!("{label}");
+    let _ = std::io::stdout().flush();
     let mut s = String::new();
     std::io::stdin().read_line(&mut s)?;
     Ok(s.trim().to_string())

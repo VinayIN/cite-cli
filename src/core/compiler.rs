@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
+use crate::core::CiteError;
 use crate::core::cache::{self, BuildCache};
 use crate::core::metadata::{Podcast, TimelineEntry};
 use crate::core::project::ProjectContext;
-use crate::core::CiteError;
 use serde::Serialize;
 use tracing::{info, instrument};
 use uuid::Uuid;
@@ -55,7 +55,7 @@ impl CompileOutcome {
             CompileOutcome::Complete { podcasts, artifact } => {
                 info!("Built {} podcast items", podcasts);
                 info!("Build artifact at {}", artifact.display());
-                info!("Build completed successfully");
+                info!("Build complete");
             }
         }
     }

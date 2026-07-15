@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use tracing::{info, warn};
 
 use crate::core::CiteError;
@@ -13,8 +15,9 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
     info!("cite-cli installed at: {}", current_exe.display());
 
     if !force {
-        warn!("This will delete the binary. Shell config files might NOT be modified.");
-        info!("Are you sure? [y/N] ");
+        warn!("This will delete the binary. Shell config files might NOT be modified");
+        print!("Are you sure? [y/N] ");
+        let _ = std::io::stdout().flush();
 
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
@@ -60,6 +63,6 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
         info!("    {install_dir_str}");
         info!("  Then restart your shell or run: source ~/.zshrc");
     };
-    info!("cite-cli has been uninstalled.");
+    info!("cite-cli has been uninstalled");
     Ok(())
 }

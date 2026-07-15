@@ -1,8 +1,8 @@
 use std::path::Path;
 use tracing::{error, info, instrument, warn};
 
-use crate::core::project::ProjectContext;
 use crate::core::CiteError;
+use crate::core::project::ProjectContext;
 
 pub enum DoctorOutcome {
     Clean,
@@ -71,10 +71,7 @@ impl DoctorOutcome {
     pub fn emit(&self) {
         match self {
             DoctorOutcome::Clean => {}
-            DoctorOutcome::Findings {
-                errors,
-                warnings,
-            } => {
+            DoctorOutcome::Findings { errors, warnings } => {
                 for e in errors {
                     error!("{e}");
                 }
@@ -90,10 +87,7 @@ fn collect_findings(errors: Vec<String>, warnings: Vec<String>) -> DoctorOutcome
     if errors.is_empty() && warnings.is_empty() {
         DoctorOutcome::Clean
     } else {
-        DoctorOutcome::Findings {
-            errors,
-            warnings,
-        }
+        DoctorOutcome::Findings { errors, warnings }
     }
 }
 
@@ -268,8 +262,13 @@ pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
     outcome.merge(lint_all(ctx));
 
     let meta_file = &ctx.manifest.project.metadata_file;
-    check_file(&ctx.root, "cite.toml", "run 'cite-cli init'");
-    check_file(&ctx.root, meta_file, "");
+    if ctx.root.join("cite.toml").exists() {
+        info!("cite.toml found");
+    }
+    if ctx.root.join(meta_file).exists() {
+        info!("{meta_file} found");
+    }
+
     for dir in &["content", "assets/audio", "assets/image", "build"] {
         let d = ctx.root.join(dir);
         if d.is_dir() {

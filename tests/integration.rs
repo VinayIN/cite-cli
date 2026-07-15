@@ -95,8 +95,12 @@ fn init_creates_project_structure() {
 #[test]
 fn init_is_idempotent_on_existing_project() {
     let h = ProjectHarness::new("existing");
-    let (_, stderr, ok) =
-        ProjectHarness::output(&["init", "--path", h.project.parent().unwrap().to_str().unwrap(), "existing"]);
+    let (_, stderr, ok) = ProjectHarness::output(&[
+        "init",
+        "--path",
+        h.project.parent().unwrap().to_str().unwrap(),
+        "existing",
+    ]);
     assert!(ok);
     assert!(stderr.contains("ready"));
     assert!(stderr.contains("Skipped"));

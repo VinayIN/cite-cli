@@ -9,6 +9,16 @@ use std::io::Write;
 use tokio::sync::mpsc;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::time::FormatTime;
+
+struct FormattedTimestamp;
+
+impl FormatTime for FormattedTimestamp {
+    fn format_time(&self, w: &mut Writer<'_>) -> std::fmt::Result {
+        write!(w, "{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"))
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -25,6 +35,7 @@ async fn main() {
             .with_env_filter(filter)
             .with_target(false)
             .with_level(true)
+            .with_timer(FormattedTimestamp)
             .with_writer(std::io::stderr)
             .init();
 
@@ -45,6 +56,7 @@ async fn main() {
             .with_env_filter(filter)
             .with_target(false)
             .with_level(true)
+            .with_timer(FormattedTimestamp)
             .with_ansi(false)
             .with_writer(make_writer)
             .init();
