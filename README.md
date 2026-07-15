@@ -35,6 +35,9 @@ cite-cli status --path my-project
 cite-cli deploy --path my-project
 ```
 
+> TUI: Running `cite-cli` will open an interactive terminal UI for running the commands.
+> NOTE: The editing of content files should still be done on your IDE.
+
 ## Tests
 
 ```bash
