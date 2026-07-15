@@ -87,7 +87,7 @@ fn init_creates_project_structure() {
     assert!(h.project.join("metadata.yml").exists(), "metadata.yml");
     assert!(h.project.join("content").is_dir(), "content/");
     assert!(h.project.join("assets/audio").is_dir(), "assets/audio/");
-    assert!(h.project.join("assets/images").is_dir(), "assets/images/");
+    assert!(h.project.join("assets/image").is_dir(), "assets/image/");
     assert!(!h.project.join("build").exists());
     assert!(h.project.join(".gitignore").exists(), ".gitignore");
 }
@@ -99,19 +99,19 @@ fn init_is_idempotent_on_existing_project() {
         ProjectHarness::output(&["init", "--path", h.project.to_str().unwrap(), "existing"]);
     assert!(ok);
     assert!(stderr.contains("ready"));
-    assert!(stderr.contains("skipped"));
+    assert!(stderr.contains("Skipped"));
 }
 
-// ── validate ────────────────────────────────────────────────────
+// ── doctor ────────────────────────────────────────────────────
 
 #[test]
-fn validate_passes_on_empty_project() {
+fn doctor_passes_on_empty_project() {
     let h = ProjectHarness::new("empty");
-    h.run_ok(&["validate"]);
+    h.run_ok(&["doctor"]);
 }
 
 #[test]
-fn validate_catches_missing_file() {
+fn doctor_catches_missing_file() {
     let h = ProjectHarness::new("missing-file");
     h.write_metadata(
         r#"
@@ -120,16 +120,16 @@ podcasts:
     file: content/nonexistent.md
 "#,
     );
-    let (_, stderr, ok) = h.run(&["validate"]);
+    let (_, stderr, ok) = h.run(&["doctor"]);
     assert!(!ok);
     assert!(stderr.contains("does not exist"));
 }
 
 #[test]
-fn validate_catches_missing_metadata() {
+fn doctor_catches_missing_metadata() {
     let h = ProjectHarness::new("no-meta");
     fs::remove_file(h.project.join("metadata.yml")).unwrap();
-    let (_, stderr, ok) = h.run(&["validate"]);
+    let (_, stderr, ok) = h.run(&["doctor"]);
     assert!(!ok);
     assert!(stderr.contains("not found"));
 }
@@ -298,6 +298,38 @@ podcasts:
     );
 }
 
+#[test]
+fn build_empty_project_succeeds() {
+    let h = ProjectHarness::new("empty-build");
+    h.run_ok(&["build"]);
+    let bundle = h.read_bundle();
+    let pods = bundle["podcasts"].as_array().unwrap();
+    assert_eq!(pods.len(), 0, "template has no default podcast");
+}
+
+#[test]
+fn build_force_rebuilds() {
+    let h = ProjectHarness::new("force-build");
+    h.write_content("content/a.md", "v1");
+    h.write_metadata(
+        r#"
+podcasts:
+  - title: "A"
+    file: content/a.md
+"#,
+    );
+    h.run_ok(&["build"]);
+    let first = h.read_bundle();
+
+    h.run_ok(&["build", "--force"]);
+    let second = h.read_bundle();
+    assert_eq!(
+        first["podcasts"][0]["content"],
+        second["podcasts"][0]["content"]
+    );
+    assert_eq!(second["compiler_version"], 1.0);
+}
+
 // ── status ──────────────────────────────────────────────────────
 
 #[test]
@@ -385,7 +417,6 @@ fn deploy_fails_without_build() {
     ).unwrap();
     let (_, stderr, ok) = h.run(&["deploy"]);
     assert!(!ok);
-    eprintln!("DEBUG stderr: {}", stderr);
     assert!(stderr.contains("No build artifact"));
 }
 
@@ -419,7 +450,7 @@ podcasts:
 "#,
     );
 
-    h.run_ok(&["validate"]);
+    h.run_ok(&["doctor"]);
     h.run_ok(&["lint"]);
     h.run_ok(&["build"]);
 
@@ -460,5 +491,5 @@ fn help_prints_usage() {
 #[test]
 fn verbose_flag_works() {
     let h = ProjectHarness::new("verbose-test");
-    h.run_ok(&["validate", "--verbose"]);
+    h.run_ok(&["doctor", "--verbose"]);
 }

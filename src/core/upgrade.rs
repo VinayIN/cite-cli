@@ -1,15 +1,15 @@
-use colored::Colorize;
+use tracing::{info, warn};
 
-use crate::error::CiteError;
+use crate::core::{CiteError, Style, styled};
 
 const REPO: &str = "VinayIN/cite-cli";
 const BIN_NAME: &str = "cite-cli";
 
-pub async fn upgrade() -> Result<(), CiteError> {
+pub async fn upgrade() -> Result<String, CiteError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| CiteError::Config(format!("Cannot determine executable path: {e}")))?;
 
-    eprintln!("{}", "Checking for updates".bold());
+    info!("Checking for updates");
 
     let client = reqwest::Client::new();
     let api_url = format!("https://api.github.com/repos/{REPO}/releases/latest");
@@ -36,36 +36,26 @@ pub async fn upgrade() -> Result<(), CiteError> {
     let current = env!("CARGO_PKG_VERSION");
 
     if current == latest {
-        eprintln!(
-            "{}",
-            format!("Already up to date (v{current})").green().bold()
-        );
-        return Ok(());
+        return Ok(styled(
+            format!("Already up to date (v{current})"),
+            Style::Success,
+        ));
     }
 
     if !is_newer(latest, current) {
-        eprintln!(
-            "{}",
-            format!("Local version v{current} is newer than remote v{latest}").cyan()
-        );
-        return Ok(());
+        return Ok(styled(
+            format!("Local version v{current} is newer than remote v{latest}"),
+            Style::Info,
+        ));
     }
 
-    eprintln!(
-        "{}",
-        format!("New version available: v{latest} (current: v{current})")
-            .yellow()
-            .bold()
-    );
+    warn!("New version available: v{latest} (current: v{current})");
 
     let target = target_triple();
     let download_url =
         format!("https://github.com/{REPO}/releases/download/v{latest}/{BIN_NAME}-{target}");
 
-    eprintln!(
-        "{}",
-        format!("Downloading {BIN_NAME} v{latest} for {target}").bold()
-    );
+    info!("Downloading {BIN_NAME} v{latest} for {target}");
 
     let tmp_path = {
         let mut p = current_exe.clone();
@@ -93,8 +83,7 @@ pub async fn upgrade() -> Result<(), CiteError> {
 
     std::fs::rename(&tmp_path, &current_exe)?;
 
-    eprintln!("{}", format!("Updated to v{latest}").green().bold());
-    Ok(())
+    Ok(styled(format!("Updated to v{latest}"), Style::Success))
 }
 
 fn target_triple() -> String {

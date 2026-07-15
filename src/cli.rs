@@ -1,10 +1,9 @@
 use clap::{Parser, Subcommand};
-use colored::Colorize;
 use std::path::{Path, PathBuf};
-use tracing::debug;
+use tracing::{debug, info, warn};
 
-use crate::error::CiteError;
-use crate::{compiler, deploy, project, scaffold, uninstall, upgrade, validation};
+use crate::core::report::{CiteError, Style, styled};
+use crate::core::{compiler, deploy, doctor, project, scaffold, uninstall, upgrade};
 
 #[derive(Parser)]
 #[command(
@@ -14,22 +13,17 @@ use crate::{compiler, deploy, project, scaffold, uninstall, upgrade, validation}
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<CliCommand>,
 
     #[arg(global = true, short, long)]
     pub verbose: bool,
 }
 
 #[derive(Subcommand)]
-pub enum Command {
+pub enum CliCommand {
     /// Create a new project with recommended structure and starter files
     Init {
         name: String,
-        #[arg(short, long)]
-        path: Option<String>,
-    },
-    /// Run full validation (structure, files, metadata, cross-references)
-    Validate {
         #[arg(short, long)]
         path: Option<String>,
     },
@@ -51,6 +45,15 @@ pub enum Command {
         path: Option<String>,
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Authenticate with Supabase and store a session for user-scoped deploys
+    Login {
+        #[arg(long)]
+        email: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
+        #[arg(short, long)]
+        path: Option<String>,
     },
     /// Show project health, validation summary, and sync state
     Status {
@@ -96,151 +99,88 @@ fn load_project(root: &Path) -> Result<project::ProjectContext, CiteError> {
 
 fn discover_projects(path: Option<String>) -> Vec<PathBuf> {
     let root = resolve_path(path);
-    let mut projects = Vec::new();
-
-    if root.join("cite.toml").exists() {
-        projects.push(root.clone());
-    }
-
-    if let Ok(entries) = std::fs::read_dir(&root) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() && p != root && p.join("cite.toml").exists() {
-                projects.push(p);
-            }
-        }
-    }
-
-    projects.sort();
-    projects
+    project::discover_projects(&root)
 }
 
 fn load_projects(
     path: Option<String>,
     empty_msg: &str,
-) -> Result<Option<(Vec<project::ProjectContext>, bool)>, CiteError> {
+) -> Result<Option<Vec<project::ProjectContext>>, CiteError> {
     let roots = discover_projects(path);
     if roots.is_empty() {
-        eprintln!("{empty_msg}");
+        warn!("{empty_msg}");
         return Ok(None);
     }
-    let multi = roots.len() > 1;
     let mut projects = Vec::with_capacity(roots.len());
     for root in &roots {
         projects.push(load_project(root)?);
     }
-    Ok(Some((projects, multi)))
-}
-
-enum Style {
-    Success,
-    Error,
-    Warning,
-    Header,
-}
-
-fn styled(msg: impl AsRef<str>, style: Style) -> String {
-    let s = msg.as_ref();
-    match style {
-        Style::Success => format!("  {}", s.green().bold()),
-        Style::Error => format!("  {}", s.red().bold()),
-        Style::Warning => format!("  {}", s.yellow().bold()),
-        Style::Header => s.bold().underline().to_string(),
-    }
+    Ok(Some(projects))
 }
 
 fn print_project_header(name: &str) {
-    eprintln!("── {} ──", name);
+    eprintln!("{}", styled(format!("── {name} ──"), Style::Header));
 }
 
-fn check_file(root: &Path, filename: &str, hint: &str) {
-    let path = root.join(filename);
-    if path.exists() {
-        eprintln!("{}", styled(format!("{filename} found"), Style::Success));
-    } else if hint.is_empty() {
-        eprintln!("{}", styled(format!("{filename} not found"), Style::Error));
-    } else {
-        eprintln!(
-            "{}",
-            styled(format!("{filename} not found - {hint}"), Style::Error)
-        );
-    }
-}
-
-impl Command {
+impl CliCommand {
     pub async fn execute(self) -> Result<(), CiteError> {
         match self {
-            Command::Init { name, path } => {
+            CliCommand::Init { name, path } => {
                 let root = match path {
                     Some(p) => PathBuf::from(p),
-                    None => std::env::current_dir()
-                        .unwrap_or_else(|_| PathBuf::from("."))
-                        .join(&name),
+                    None => resolve_path(None).join(&name),
                 };
                 let report = scaffold::init_project(&name, &root)?;
 
                 for d in &report.directories_created {
-                    eprintln!("  {} (created)", d);
+                    info!("Created directory: {d}");
                 }
                 for f in &report.files_created {
-                    eprintln!("  {} (created)", f);
+                    info!("Created file: {f}");
                 }
                 for f in &report.files_skipped {
-                    eprintln!("  {} (skipped)", f);
+                    info!("Skipped: {f}");
                 }
                 eprintln!(
                     "{}",
                     styled(
                         format!("Project '{name}' ready at {}", root.display()),
-                        Style::Success
+                        Style::Success,
                     )
                 );
                 Ok(())
             }
-            Command::Validate { path } => {
-                let Some((projects, multi)) =
-                    load_projects(path, "No projects found (no cite.toml found)")?
+            CliCommand::Lint { path } => {
+                let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
                 };
-                let mut has_errors = false;
+                let multi = projects.len() > 1;
+                let mut overall_has_warnings = false;
                 for ctx in &projects {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
                     }
-                    let report = validation::validate_all(ctx);
-                    report.print();
-                    if report.has_errors() {
-                        has_errors = true;
+                    let outcome = doctor::lint_all(ctx);
+                    outcome.print();
+                    if outcome.has_warnings() {
+                        overall_has_warnings = true;
                     }
                 }
-                if has_errors {
-                    Err(CiteError::Validation("Validation failed".to_string()))
-                } else {
-                    Ok(())
-                }
-            }
-            Command::Lint { path } => {
-                let Some((projects, multi)) =
-                    load_projects(path, "No projects found (no cite.toml found)")?
-                else {
-                    return Ok(());
-                };
-                for ctx in &projects {
-                    if multi {
-                        print_project_header(&ctx.manifest.project.name);
-                    }
-                    let report = validation::lint_all(ctx);
-                    report.print();
+                if !overall_has_warnings {
+                    eprintln!(
+                        "{}",
+                        styled("Lint complete — no issues found", Style::Success)
+                    );
                 }
                 Ok(())
             }
-            Command::Build { path, force } => {
-                let Some((projects, multi)) =
-                    load_projects(path, "No projects found (no cite.toml found)")?
+            CliCommand::Build { path, force } => {
+                let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
                 };
+                let multi = projects.len() > 1;
                 let mut has_errors = false;
                 for ctx in &projects {
                     if multi {
@@ -249,33 +189,36 @@ impl Command {
                     match compiler::compile(ctx, force).await {
                         Ok(report) => report.print(),
                         Err(e) => {
-                            eprintln!("{}", styled(format!("Build failed: {e}"), Style::Error));
+                            warn!("Build failed: {e}");
                             has_errors = true;
                         }
                     }
                 }
                 if has_errors {
-                    Err(CiteError::Deploy(
+                    Err(CiteError::Config(
                         "Build failed in one or more projects".to_string(),
                     ))
                 } else {
                     Ok(())
                 }
             }
-            Command::Deploy { path, dry_run } => {
-                let Some((projects, multi)) =
-                    load_projects(path, "No projects found (no cite.toml found)")?
+            CliCommand::Deploy { path, dry_run } => {
+                let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
                 };
+                let multi = projects.len() > 1;
                 let mut has_errors = false;
                 for ctx in &projects {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
                     }
-                    if let Err(e) = deploy::deploy(ctx, dry_run).await {
-                        eprintln!("{}", styled(format!("Deploy failed: {e}"), Style::Error));
-                        has_errors = true;
+                    match deploy::deploy(ctx, dry_run).await {
+                        Ok(msg) => eprintln!("{msg}"),
+                        Err(e) => {
+                            warn!("Deploy failed: {e}");
+                            has_errors = true;
+                        }
                     }
                 }
                 if has_errors {
@@ -286,10 +229,11 @@ impl Command {
                     Ok(())
                 }
             }
-            Command::Status { path } => {
-                let Some((projects, multi)) = load_projects(path, "No projects found")? else {
+            CliCommand::Status { path } => {
+                let Some(projects) = load_projects(path, "No projects found")? else {
                     return Ok(());
                 };
+                let multi = projects.len() > 1;
                 for ctx in &projects {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
@@ -299,9 +243,10 @@ impl Command {
                     eprintln!("  Name: {}", ctx.manifest.project.name);
                     eprintln!("  Project Root: {}", ctx.root.display());
                     eprintln!("  Artist ID: {}", ctx.manifest.project.artist_id);
-                    if let Some(backend) = &ctx.manifest.backend {
-                        eprintln!("  Active subscription: {}", backend.subscription_plan);
-                        eprintln!("  Publishing to: {}", backend.staging_url);
+                    if let Some(backend) = &ctx.manifest.backend
+                        && let Some(url) = &backend.staging_url
+                    {
+                        eprintln!("  Publishing to: {url}");
                     }
                     eprintln!("  Podcasts: {}", ctx.metadata.podcasts.len());
                     let build_path = ctx.build_dir().join("content.json");
@@ -327,83 +272,47 @@ impl Command {
                 }
                 Ok(())
             }
-            Command::Doctor { path } => {
+            CliCommand::Doctor { path } => {
                 let root = resolve_path(path.clone());
-                let Some((projects, multi)) = load_projects(path, "")? else {
-                    eprintln!("{}", styled("Running diagnostics", Style::Header));
-                    check_file(&root, "cite.toml", "run 'cite-cli init'");
-                    check_file(&root, "metadata.yml", "");
+                let Some(projects) = load_projects(path, "")? else {
+                    info!("Running diagnostics");
+                    doctor::check_file(&root, "cite.toml", "run 'cite-cli init'");
+                    doctor::check_file(&root, "metadata.yml", "");
                     return Ok(());
                 };
+                let multi = projects.len() > 1;
+                let mut overall_has_errors = false;
+                let mut overall_has_warnings = false;
                 for ctx in &projects {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
-                    } else {
-                        eprintln!("{}", styled("Running diagnostics", Style::Header));
                     }
-                    check_file(&ctx.root, "cite.toml", "run 'cite-cli init'");
-                    check_file(&ctx.root, "metadata.yml", "");
-                    for dir in &["content", "assets/audio", "assets/images", "build"] {
-                        let d = ctx.root.join(dir);
-                        if d.is_dir() {
-                            eprintln!("{}", styled(format!("{dir}/ exists"), Style::Success));
-                        } else if *dir == "build" {
-                            eprintln!("  {dir}/ missing (created by build)");
-                        } else {
-                            eprintln!("  {dir}/ missing (will be created on init)");
-                        }
+                    let outcome = doctor::run(ctx)?;
+                    outcome.print();
+                    if outcome.has_errors() {
+                        overall_has_errors = true;
                     }
-                    if ctx.manifest.backend.is_some() {
-                        eprintln!(
-                            "{}",
-                            styled("Backend configured for staging", Style::Success)
-                        );
-                    } else {
-                        eprintln!("  No backend configured (deploy will fail)");
+                    if outcome.has_warnings() {
+                        overall_has_warnings = true;
                     }
-                    if ctx.manifest.build.incremental {
-                        eprintln!("{}", styled("Incremental builds enabled", Style::Success));
-                    }
-                    if ctx.manifest.project.artist_id.is_empty() {
-                        eprintln!(
-                            "{}",
-                            styled(
-                                "Artist ID is empty - set it in [project] in cite.toml",
-                                Style::Warning
-                            )
-                        );
-                    } else {
-                        eprintln!("  Artist ID: {}", ctx.manifest.project.artist_id);
-                    }
-                    if std::env::var("CITE_STAGING_SERVICE_KEY").is_ok() {
-                        eprintln!(
-                            "{}",
-                            styled("CITE_STAGING_SERVICE_KEY env var set", Style::Success)
-                        );
-                    } else if ctx
-                        .manifest
-                        .backend
-                        .as_ref()
-                        .map(|b| !b.staging_service_key.is_empty())
-                        .unwrap_or(false)
-                    {
-                        eprintln!("  Using inline staging_service_key from cite.toml");
-                    } else {
-                        eprintln!(
-                            "{}",
-                            styled(
-                                "No staging service key found - deploy will fail",
-                                Style::Warning
-                            )
-                        );
-                    }
+                }
+                if overall_has_errors {
+                    return Err(CiteError::Config(
+                        "Doctor found validation errors".to_string(),
+                    ));
+                } else if !overall_has_warnings {
+                    eprintln!(
+                        "{}",
+                        styled("Doctor check complete — no issues found", Style::Success)
+                    );
                 }
                 Ok(())
             }
-            Command::Clean { path } => {
-                let Some((projects, multi)) = load_projects(path, "No projects found")? else {
+            CliCommand::Clean { path } => {
+                let Some(projects) = load_projects(path, "No projects found")? else {
                     return Ok(());
                 };
+                let multi = projects.len() > 1;
                 for ctx in &projects {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
@@ -413,13 +322,28 @@ impl Command {
                 }
                 Ok(())
             }
-            Command::Rollback { id, path } => {
+            CliCommand::Rollback { id, path } => {
                 let root = resolve_path(path);
                 let ctx = load_project(&root)?;
-                deploy::rollback(&ctx, &id).await
+                let msg = deploy::rollback(&ctx, &id).await?;
+                eprintln!("{msg}");
+                Ok(())
             }
-            Command::Upgrade => upgrade::upgrade().await,
-            Command::Uninstall { force } => uninstall::uninstall(force),
+            CliCommand::Login {
+                email,
+                password,
+                path,
+            } => {
+                let root = resolve_path(path);
+                let ctx = load_project(&root)?;
+                deploy::login(&ctx, email, password).await
+            }
+            CliCommand::Upgrade => {
+                let msg = upgrade::upgrade().await?;
+                eprintln!("{msg}");
+                Ok(())
+            }
+            CliCommand::Uninstall { force } => uninstall::uninstall(force),
         }
     }
 }

@@ -1,8 +1,7 @@
 use std::io::Write;
+use tracing::info;
 
-use colored::Colorize;
-
-use crate::error::CiteError;
+use crate::core::{CiteError, Style, styled};
 
 pub fn uninstall(force: bool) -> Result<(), CiteError> {
     let current_exe = std::env::current_exe()
@@ -12,10 +11,7 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
         .parent()
         .ok_or_else(|| CiteError::Config("Cannot determine install directory".into()))?;
 
-    eprintln!(
-        "{}",
-        format!("cite-cli is installed at: {}", current_exe.display()).bold()
-    );
+    info!("cite-cli installed at: {}", current_exe.display());
 
     if !force {
         eprintln!();
@@ -29,17 +25,14 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
         match input.trim().to_lowercase().as_str() {
             "y" | "yes" => {}
             _ => {
-                eprintln!("{}", "Uninstall cancelled".red().bold());
+                eprintln!("{}", styled("Uninstall cancelled", Style::Error));
                 return Ok(());
             }
         }
     }
 
     std::fs::remove_file(&current_exe)?;
-    eprintln!(
-        "{}",
-        format!("Removed {}", current_exe.display()).green().bold()
-    );
+    info!("Removed {}", current_exe.display());
 
     if install_dir
         .read_dir()
@@ -47,12 +40,7 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
         .unwrap_or(false)
     {
         let _ = std::fs::remove_dir(install_dir);
-        eprintln!(
-            "{}",
-            format!("Removed empty directory {}", install_dir.display())
-                .green()
-                .bold()
-        );
+        info!("Removed empty directory {}", install_dir.display());
     }
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
@@ -72,18 +60,16 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
 
     if found {
         eprintln!();
-        eprintln!(
-            "{}",
-            "Shell config files contain PATH references to the install directory.".cyan()
-        );
-        eprintln!(
-            "  Edit your shell config (~/.zshrc, ~/.bashrc, etc.) and remove lines containing:"
-        );
-        eprintln!("    {}", install_dir_str);
+        info!("Shell config files reference the install directory");
+        eprintln!("  Edit ~/.zshrc, ~/.bashrc, etc. and remove lines containing:");
+        eprintln!("    {install_dir_str}");
         eprintln!("  Then restart your shell or run: source ~/.zshrc");
     }
 
     eprintln!();
-    eprintln!("{}", "cite-cli has been uninstalled.".green().bold());
+    eprintln!(
+        "{}",
+        styled("cite-cli has been uninstalled.", Style::Success)
+    );
     Ok(())
 }

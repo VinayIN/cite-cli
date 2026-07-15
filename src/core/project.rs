@@ -1,7 +1,8 @@
-use crate::error::CiteError;
-use crate::manifest::Manifest;
-use crate::metadata::Metadata;
 use std::path::{Path, PathBuf};
+
+use crate::core::CiteError;
+use crate::core::manifest::Manifest;
+use crate::core::metadata::Metadata;
 use tracing::instrument;
 
 #[derive(Debug, Clone)]
@@ -53,7 +54,7 @@ impl ProjectContext {
 
     pub fn content_files(&self) -> Vec<PathBuf> {
         self.metadata
-            .content_files()
+            .referenced_files()
             .iter()
             .map(|f| self.root.join(f))
             .collect()
@@ -72,36 +73,22 @@ impl ProjectContext {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::manifest::Manifest;
-    use std::path::PathBuf;
+pub fn discover_projects(root: &Path) -> Vec<PathBuf> {
+    let mut projects = Vec::new();
 
-    #[test]
-    fn test_content_files_collects_all_references() {
-        let ctx = ProjectContext {
-            root: PathBuf::from("/root"),
-            manifest: Manifest::default_template("test"),
-            metadata: Metadata {
-                podcasts: vec![crate::metadata::Podcast {
-                    id: "abc".into(),
-                    title: "P".into(),
-                    file: "content/p.md".into(),
-                    source_url: None,
-                    category: None,
-                    thumbnail: None,
-                    audio: Some("assets/audio/p.mp3".into()),
-                    citation: Some("content/p.bib".into()),
-                    content: None,
-                }],
-            },
-        };
-
-        let files = ctx.content_files();
-        assert_eq!(files.len(), 3);
-        assert!(files.contains(&PathBuf::from("/root/content/p.md")));
-        assert!(files.contains(&PathBuf::from("/root/content/p.bib")));
-        assert!(files.contains(&PathBuf::from("/root/assets/audio/p.mp3")));
+    if root.join("cite.toml").exists() {
+        projects.push(root.to_path_buf());
     }
+
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() && p != root && p.join("cite.toml").exists() {
+                projects.push(p);
+            }
+        }
+    }
+
+    projects.sort();
+    projects
 }

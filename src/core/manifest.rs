@@ -1,42 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Manifest {
-    #[serde(default)]
-    pub project: ProjectConfig,
-    #[serde(default)]
-    pub build: BuildConfig,
-    #[serde(default)]
-    pub backend: Option<BackendConfig>,
-    #[serde(default)]
-    pub compiler: CompilerConfig,
-    #[serde(default)]
-    pub assets: AssetsConfig,
-    #[serde(default)]
-    pub validation: ValidationConfig,
-}
-
-fn get_language() -> String {
-    "en".to_string()
-}
-
-fn get_metadata_file() -> String {
-    "metadata.yml".to_string()
-}
-
-fn get_uuid() -> String {
-    uuid::Uuid::new_v4().to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProjectConfig {
-    #[serde(default)]
     pub name: String,
-    #[serde(default = "get_language")]
     pub language: String,
-    #[serde(default = "get_metadata_file")]
     pub metadata_file: String,
-    #[serde(default = "get_uuid")]
     pub artist_id: String,
 }
 
@@ -44,116 +13,110 @@ impl Default for ProjectConfig {
     fn default() -> Self {
         Self {
             name: String::new(),
-            language: get_language(),
-            metadata_file: get_metadata_file(),
-            artist_id: get_uuid(),
+            language: "en".to_string(),
+            metadata_file: "metadata.yml".to_string(),
+            artist_id: String::new(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BuildConfig {
-    #[serde(default = "get_compiler_version")]
     pub compiler_version: f64,
-    #[serde(default = "get_incremental")]
     pub incremental: bool,
-    #[serde(default = "get_output_format")]
     pub output_format: String,
-}
-
-fn get_compiler_version() -> f64 {
-    1.0
-}
-
-fn get_incremental() -> bool {
-    true
-}
-
-fn get_output_format() -> String {
-    "json".into()
 }
 
 impl Default for BuildConfig {
     fn default() -> Self {
         Self {
-            compiler_version: get_compiler_version(),
-            incremental: get_incremental(),
-            output_format: get_output_format(),
+            compiler_version: 1.0,
+            incremental: true,
+            output_format: "json".to_string(),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BackendConfig {
-    #[serde(default)]
-    pub staging_url: String,
-    #[serde(default)]
-    pub staging_service_key: String,
-    #[serde(default = "get_subscription_plan")]
-    pub subscription_plan: String,
+    pub staging_url: Option<String>,
+    pub staging_service_key: Option<String>,
 }
 
-fn get_subscription_plan() -> String {
-    "Basic".into()
+impl Default for BackendConfig {
+    fn default() -> Self {
+        Self {
+            staging_url: None,
+            staging_service_key: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CompilerConfig {
-    #[serde(default = "get_enabled_extensions")]
     pub enabled_extensions: Vec<String>,
-}
-
-fn get_enabled_extensions() -> Vec<String> {
-    vec!["tables".into(), "footnotes".into()]
 }
 
 impl Default for CompilerConfig {
     fn default() -> Self {
         Self {
-            enabled_extensions: get_enabled_extensions(),
+            enabled_extensions: vec!["tables".to_string(), "footnotes".to_string()],
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AssetsConfig {
-    #[serde(default = "get_audio_formats")]
     pub audio_formats: Vec<String>,
-    #[serde(default = "get_image_formats")]
     pub image_formats: Vec<String>,
-}
-
-fn get_audio_formats() -> Vec<String> {
-    vec!["mp3".into(), "wav".into(), "m4a".into()]
-}
-
-fn get_image_formats() -> Vec<String> {
-    vec!["jpg".into(), "png".into()]
 }
 
 impl Default for AssetsConfig {
     fn default() -> Self {
         Self {
-            audio_formats: get_audio_formats(),
-            image_formats: get_image_formats(),
+            audio_formats: vec!["mp3".to_string(), "wav".to_string(), "m4a".to_string()],
+            image_formats: vec!["jpg".to_string(), "png".to_string()],
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ValidationConfig {
-    #[serde(default = "get_strict")]
     pub strict: bool,
-}
-
-fn get_strict() -> bool {
-    true
 }
 
 impl Default for ValidationConfig {
     fn default() -> Self {
+        Self { strict: true }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Manifest {
+    pub project: ProjectConfig,
+    pub build: BuildConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<BackendConfig>,
+    pub compiler: CompilerConfig,
+    pub assets: AssetsConfig,
+    pub validation: ValidationConfig,
+}
+
+impl Default for Manifest {
+    fn default() -> Self {
         Self {
-            strict: get_strict(),
+            project: ProjectConfig::default(),
+            build: BuildConfig::default(),
+            backend: None,
+            compiler: CompilerConfig::default(),
+            assets: AssetsConfig::default(),
+            validation: ValidationConfig::default(),
         }
     }
 }
@@ -188,7 +151,7 @@ mod tests {
         assert!(m.build.incremental);
         assert!(m.backend.is_none());
         assert!(m.validation.strict);
-        assert!(!m.project.artist_id.is_empty());
+        assert!(m.project.artist_id.is_empty());
     }
 
     #[test]
@@ -232,8 +195,29 @@ strict = true
         assert_eq!(m.assets.image_formats, vec!["jpg"]);
         assert!(m.validation.strict);
         assert_eq!(
-            m.backend.as_ref().unwrap().staging_url,
-            "https://example.com"
+            m.backend.as_ref().unwrap().staging_url.as_deref(),
+            Some("https://example.com")
         );
+    }
+
+    #[test]
+    fn test_deserialize_partial_applies_defaults() {
+        let toml_str = r#"
+[project]
+name = "partial"
+artist_id = "abc"
+"#;
+        let m: Manifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(m.project.name, "partial");
+        assert_eq!(m.project.language, "en");
+        assert_eq!(m.project.metadata_file, "metadata.yml");
+        assert_eq!(m.project.artist_id, "abc");
+        assert_eq!(m.build.compiler_version, 1.0);
+        assert!(m.build.incremental);
+        assert_eq!(m.build.output_format, "json");
+        assert_eq!(m.compiler.enabled_extensions, vec!["tables", "footnotes"]);
+        assert_eq!(m.assets.audio_formats, vec!["mp3", "wav", "m4a"]);
+        assert_eq!(m.assets.image_formats, vec!["jpg", "png"]);
+        assert!(m.validation.strict);
     }
 }

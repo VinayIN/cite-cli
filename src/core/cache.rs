@@ -1,10 +1,11 @@
-use crate::error::CiteError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
 use tokio::io::AsyncReadExt;
 use tracing::instrument;
+
+use crate::core::CiteError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildCache {
@@ -21,18 +22,16 @@ impl BuildCache {
     }
 
     pub async fn load_or_default(path: &Path) -> Result<Self, CiteError> {
-        if path.exists() {
-            let data = tokio::fs::read_to_string(path).await?;
-            Ok(serde_json::from_str(&data).unwrap_or_else(|_| BuildCache {
-                compiler_version: 0.0,
-                hashes: HashMap::new(),
-            }))
-        } else {
-            Ok(BuildCache {
-                compiler_version: 0.0,
-                hashes: HashMap::new(),
-            })
+        if path.exists()
+            && let Ok(data) = tokio::fs::read_to_string(path).await
+            && let Ok(cache) = serde_json::from_str(&data)
+        {
+            return Ok(cache);
         }
+        Ok(Self {
+            compiler_version: 0.0,
+            hashes: HashMap::new(),
+        })
     }
 
     pub async fn save(&self, path: &Path) -> Result<(), CiteError> {
@@ -113,5 +112,17 @@ mod tests {
         current.insert("a.md".into(), "def".into());
         let changed = cache.changed_since(&current);
         assert_eq!(changed, vec!["a.md"]);
+    }
+
+    #[test]
+    fn test_changed_since_file_removed() {
+        let mut hashes = HashMap::new();
+        hashes.insert("a.md".into(), "abc".into());
+        hashes.insert("b.md".into(), "def".into());
+        let cache = BuildCache::new(0.0, hashes);
+        let mut current = HashMap::new();
+        current.insert("a.md".into(), "abc".into());
+        let changed = cache.changed_since(&current);
+        assert_eq!(changed, vec!["b.md"]);
     }
 }

@@ -1,15 +1,6 @@
-mod cache;
 mod cli;
-mod compiler;
-mod deploy;
-mod error;
-mod manifest;
-mod metadata;
-mod project;
-mod scaffold;
-mod uninstall;
-mod upgrade;
-mod validation;
+mod core;
+mod tui;
 
 use clap::Parser;
 use cli::Cli;
@@ -32,12 +23,20 @@ async fn main() {
         .with_target(false)
         .with_level(true)
         .without_time()
+        .with_writer(std::io::stderr)
         .init();
 
     info!("cite-cli v{}", env!("CARGO_PKG_VERSION"));
 
-    if let Err(e) = cli.command.execute().await {
-        eprintln!("{} {}", "error:".red().bold(), e);
-        std::process::exit(1);
+    if let Some(cmd) = cli.command {
+        if let Err(e) = cmd.execute().await {
+            eprintln!("{} {}", "error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    } else {
+        if let Err(e) = tui::run_tui().await {
+            eprintln!("{} {}", "error:".red().bold(), e);
+            std::process::exit(1);
+        }
     }
 }
