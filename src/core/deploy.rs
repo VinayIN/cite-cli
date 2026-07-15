@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::PathBuf;
 
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -7,9 +8,9 @@ use serde_json::Value;
 use tracing::{info, instrument, warn};
 use uuid::Uuid;
 
+use crate::core::CiteError;
 use crate::core::manifest::BackendConfig;
 use crate::core::project::ProjectContext;
-use crate::core::{CiteError, Style, styled};
 
 const STORAGE_BUCKET: &str = "assets";
 
@@ -185,11 +186,8 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteE
     let timeline_count = record.timeline_ids.len();
     let asset_count = record.asset_paths.len();
 
-    Ok(styled(
-        format!(
-            "Deployed {podcast_count} podcast(s), {timeline_count} timeline(s), {asset_count} asset(s)"
-        ),
-        Style::Success,
+    Ok(format!(
+        "Deployed {podcast_count} podcast(s), {timeline_count} timeline(s), {asset_count} asset(s)"
     ))
 }
 
@@ -420,7 +418,7 @@ pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<Strin
         warn!("Failed to remove local deployment record: {e}");
     }
 
-    Ok(styled("Rollback complete", Style::Success))
+    Ok(format!("Rollback complete"))
 }
 
 #[derive(Deserialize)]
@@ -493,7 +491,8 @@ pub async fn login(
     let email = match email {
         Some(e) => e,
         None => {
-            eprint!("Email: ");
+            print!("Email: ");
+            let _ = std::io::stdout().flush();
             let mut s = String::new();
             std::io::stdin().read_line(&mut s)?;
             s.trim().to_string()
@@ -502,7 +501,8 @@ pub async fn login(
     let password = match password {
         Some(p) => p,
         None => {
-            eprint!("Password: ");
+            print!("Password: ");
+            let _ = std::io::stdout().flush();
             let mut s = String::new();
             std::io::stdin().read_line(&mut s)?;
             s.trim().to_string()
@@ -545,23 +545,14 @@ pub async fn login(
         email: email.clone(),
     };
     save_session(&session)?;
-    eprintln!(
-        "{}",
-        styled(format!("Logged in as {email}"), Style::Success)
-    );
+    info!("Logged in as {}", email);
 
     match fetch_user_artists(backend, &token.access_token).await {
         Ok(artists) if artists.is_empty() => {
-            eprintln!(
-                "{}",
-                styled("No artist linked to this account.", Style::Warning)
-            );
+            warn!("No artist linked to this account");
             match prompt_create_artist(backend, &token.access_token).await? {
                 Some((id, name)) => {
-                    eprintln!(
-                        "{}",
-                        styled(format!("Created artist '{name}' ({id})"), Style::Success)
-                    );
+                    info!("Created artist '{name}' ({id})");
                 }
                 None => {
                     info!("Skipped artist creation");
@@ -619,7 +610,8 @@ async fn fetch_user_artists(
 }
 
 fn prompt_line(label: &str) -> Result<String, CiteError> {
-    eprint!("{label}");
+    print!("{label}");
+    let _ = std::io::stdout().flush();
     let mut s = String::new();
     std::io::stdin().read_line(&mut s)?;
     Ok(s.trim().to_string())

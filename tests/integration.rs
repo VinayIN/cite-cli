@@ -12,7 +12,7 @@ impl ProjectHarness {
     fn new(name: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join(name);
-        Self::ok(&["init", "--path", project.to_str().unwrap(), name]);
+        Self::ok(&["init", "--path", dir.path().to_str().unwrap(), name]);
         Self { _dir: dir, project }
     }
 
@@ -95,8 +95,12 @@ fn init_creates_project_structure() {
 #[test]
 fn init_is_idempotent_on_existing_project() {
     let h = ProjectHarness::new("existing");
-    let (_, stderr, ok) =
-        ProjectHarness::output(&["init", "--path", h.project.to_str().unwrap(), "existing"]);
+    let (_, stderr, ok) = ProjectHarness::output(&[
+        "init",
+        "--path",
+        h.project.parent().unwrap().to_str().unwrap(),
+        "existing",
+    ]);
     assert!(ok);
     assert!(stderr.contains("ready"));
     assert!(stderr.contains("Skipped"));

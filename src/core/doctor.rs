@@ -1,8 +1,8 @@
 use std::path::Path;
-use tracing::{info, instrument, warn};
+use tracing::{error, info, instrument, warn};
 
+use crate::core::CiteError;
 use crate::core::project::ProjectContext;
-use crate::core::{CiteError, Style, styled};
 
 pub enum DoctorOutcome {
     Clean,
@@ -68,29 +68,16 @@ impl DoctorOutcome {
         }
     }
 
-    pub fn print(&self) {
-        for line in self.to_lines() {
-            eprintln!("{line}");
-        }
-    }
-
-    pub fn to_lines(&self) -> Vec<String> {
+    pub fn emit(&self) {
         match self {
-            DoctorOutcome::Clean => vec![],
+            DoctorOutcome::Clean => {}
             DoctorOutcome::Findings { errors, warnings } => {
-                let mut lines = Vec::new();
                 for e in errors {
-                    lines.push(styled(format!("error: {e}"), Style::Error));
+                    error!("{e}");
                 }
                 for w in warnings {
-                    lines.push(styled(format!("warning: {w}"), Style::Warning));
+                    warn!("{w}");
                 }
-                lines.push(format!(
-                    "{} {}",
-                    styled(format!("{} error(s)", errors.len()), Style::Error),
-                    styled(format!("{} warning(s)", warnings.len()), Style::Warning)
-                ));
-                lines
             }
         }
     }
@@ -130,10 +117,9 @@ fn validate_project_structure(
     ];
     for (name, path) in &required {
         if !path.exists() {
-            errors.push(format!(
-                "Required file '{name}' not found at {}",
-                path.display()
-            ));
+            let msg = format!("Required file '{name}' not found at {}", path.display());
+            error!("{msg}");
+            errors.push(msg);
         }
     }
 
@@ -144,10 +130,9 @@ fn validate_project_structure(
     ];
     for (name, path) in &dirs {
         if !path.is_dir() {
-            warnings.push(format!(
-                "Directory '{name}' does not exist at {}",
-                path.display()
-            ));
+            let msg = format!("Directory '{name}' does not exist at {}", path.display());
+            warn!("{msg}");
+            warnings.push(msg);
         }
     }
 }
@@ -160,29 +145,35 @@ fn validate_file_existence(
     for pod in &ctx.metadata.podcasts {
         let path = ctx.root.join(&pod.file);
         if !path.exists() {
-            errors.push(format!(
+            let msg = format!(
                 "Podcast '{}' references file '{}' which does not exist",
                 pod.title, pod.file
-            ));
+            );
+            error!("{msg}");
+            errors.push(msg);
         }
 
         if let Some(cit) = &pod.citation {
             let cit_path = ctx.root.join(cit);
             if !cit_path.exists() {
-                warnings.push(format!(
+                let msg = format!(
                     "Podcast '{}' references citation file '{}' which does not exist",
                     pod.title, cit
-                ));
+                );
+                warn!("{msg}");
+                warnings.push(msg);
             }
         }
 
         if let Some(audio) = &pod.audio {
             let audio_path = ctx.root.join(audio);
             if !audio_path.exists() {
-                errors.push(format!(
+                let msg = format!(
                     "Podcast '{}' references audio file '{}' which does not exist",
                     pod.title, audio
-                ));
+                );
+                error!("{msg}");
+                errors.push(msg);
             }
         }
     }
@@ -204,10 +195,12 @@ fn validate_asset_formats(ctx: &ProjectContext, warnings: &mut Vec<String>) {
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
             if !allowed_audio.contains(ext) {
-                warnings.push(format!(
+                let msg = format!(
                     "Podcast '{}' has audio file '{audio}' with extension '{ext}' not in allowed audio formats {:?}",
                     pod.title, ctx.manifest.assets.audio_formats
-                ));
+                );
+                warn!("{msg}");
+                warnings.push(msg);
             }
         }
 
@@ -216,10 +209,12 @@ fn validate_asset_formats(ctx: &ProjectContext, warnings: &mut Vec<String>) {
             .and_then(|e| e.to_str())
             .unwrap_or("");
         if !matches!(ext, "md" | "rst") {
-            warnings.push(format!(
+            let msg = format!(
                 "Podcast '{}' has file '{}' with unexpected extension '{ext}'",
                 pod.title, pod.file
-            ));
+            );
+            warn!("{msg}");
+            warnings.push(msg);
         }
     }
 }
@@ -235,10 +230,12 @@ pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
         {
             let word_count = content.split_whitespace().count();
             if word_count < 10 {
-                warnings.push(format!(
+                let msg = format!(
                     "Podcast '{}' is very short ({} words)",
                     pod.title, word_count
-                ));
+                );
+                warn!("{msg}");
+                warnings.push(msg);
             }
         }
     }
@@ -265,8 +262,13 @@ pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
     outcome.merge(lint_all(ctx));
 
     let meta_file = &ctx.manifest.project.metadata_file;
-    check_file(&ctx.root, "cite.toml", "run 'cite-cli init'");
-    check_file(&ctx.root, meta_file, "");
+    if ctx.root.join("cite.toml").exists() {
+        info!("cite.toml found");
+    }
+    if ctx.root.join(meta_file).exists() {
+        info!("{meta_file} found");
+    }
+
     for dir in &["content", "assets/audio", "assets/image", "build"] {
         let d = ctx.root.join(dir);
         if d.is_dir() {
@@ -315,5 +317,6 @@ pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
         outcome.push_warning(msg);
     }
 
+    outcome.emit();
     Ok(outcome)
 }

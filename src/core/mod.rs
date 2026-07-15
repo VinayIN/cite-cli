@@ -10,4 +10,4 @@ pub mod uninstall;
 pub mod upgrade;
 
 pub mod report;
-pub use report::{CiteError, Style, styled};
+pub use report::CiteError;
