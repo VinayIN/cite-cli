@@ -72,6 +72,7 @@ pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>) -> Result<(), 
                         }
                         _ => {}
                     }
+                    app.handle_key(key);
                 }
             }
         }
