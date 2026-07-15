@@ -1,11 +1,11 @@
 use tracing::{info, warn};
 
-use crate::report::{CiteError, Style, styled};
+use crate::core::{CiteError, Style, styled};
 
 const REPO: &str = "VinayIN/cite-cli";
 const BIN_NAME: &str = "cite-cli";
 
-pub async fn upgrade() -> Result<(), CiteError> {
+pub async fn upgrade() -> Result<String, CiteError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| CiteError::Config(format!("Cannot determine executable path: {e}")))?;
 
@@ -36,22 +36,17 @@ pub async fn upgrade() -> Result<(), CiteError> {
     let current = env!("CARGO_PKG_VERSION");
 
     if current == latest {
-        eprintln!(
-            "{}",
-            styled(format!("Already up to date (v{current})"), Style::Success)
-        );
-        return Ok(());
+        return Ok(styled(
+            format!("Already up to date (v{current})"),
+            Style::Success,
+        ));
     }
 
     if !is_newer(latest, current) {
-        eprintln!(
-            "{}",
-            styled(
-                format!("Local version v{current} is newer than remote v{latest}"),
-                Style::Info
-            )
-        );
-        return Ok(());
+        return Ok(styled(
+            format!("Local version v{current} is newer than remote v{latest}"),
+            Style::Info,
+        ));
     }
 
     warn!("New version available: v{latest} (current: v{current})");
@@ -88,11 +83,7 @@ pub async fn upgrade() -> Result<(), CiteError> {
 
     std::fs::rename(&tmp_path, &current_exe)?;
 
-    eprintln!(
-        "{}",
-        styled(format!("Updated to v{latest}"), Style::Success)
-    );
-    Ok(())
+    Ok(styled(format!("Updated to v{latest}"), Style::Success))
 }
 
 fn target_triple() -> String {

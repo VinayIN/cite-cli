@@ -1,7 +1,8 @@
-use crate::project::ProjectContext;
-use crate::report::{CiteError, Style, styled};
 use std::path::Path;
-use tracing::{error, info, instrument, warn};
+use tracing::{info, instrument, warn};
+
+use crate::core::project::ProjectContext;
+use crate::core::{CiteError, Style, styled};
 
 pub enum DoctorOutcome {
     Clean,
@@ -68,20 +69,28 @@ impl DoctorOutcome {
     }
 
     pub fn print(&self) {
+        for line in self.to_lines() {
+            eprintln!("{line}");
+        }
+    }
+
+    pub fn to_lines(&self) -> Vec<String> {
         match self {
-            DoctorOutcome::Clean => {}
+            DoctorOutcome::Clean => vec![],
             DoctorOutcome::Findings { errors, warnings } => {
+                let mut lines = Vec::new();
                 for e in errors {
-                    error!("{}", e);
+                    lines.push(styled(format!("error: {e}"), Style::Error));
                 }
                 for w in warnings {
-                    warn!("{}", w);
+                    lines.push(styled(format!("warning: {w}"), Style::Warning));
                 }
-                eprintln!(
+                lines.push(format!(
                     "{} {}",
                     styled(format!("{} error(s)", errors.len()), Style::Error),
                     styled(format!("{} warning(s)", warnings.len()), Style::Warning)
-                );
+                ));
+                lines
             }
         }
     }
@@ -274,8 +283,7 @@ pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
         .backend
         .as_ref()
         .and_then(|b| b.staging_url.as_deref())
-        .map(|s| !s.is_empty())
-        .unwrap_or(false)
+        .is_some_and(|s| !s.is_empty())
     {
         info!("Backend configured for staging");
     } else {
@@ -298,8 +306,7 @@ pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
         .backend
         .as_ref()
         .and_then(|b| b.staging_service_key.as_deref())
-        .map(|s| !s.is_empty())
-        .unwrap_or(false)
+        .is_some_and(|s| !s.is_empty())
     {
         info!("Using inline staging_service_key from cite.toml");
     } else {

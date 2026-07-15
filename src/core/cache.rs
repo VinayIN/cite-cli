@@ -1,10 +1,11 @@
-use crate::report::CiteError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
 use tokio::io::AsyncReadExt;
 use tracing::instrument;
+
+use crate::core::CiteError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildCache {
@@ -121,7 +122,6 @@ mod tests {
         let cache = BuildCache::new(0.0, hashes);
         let mut current = HashMap::new();
         current.insert("a.md".into(), "abc".into());
-        // b.md is in cache but not in current
         let changed = cache.changed_since(&current);
         assert_eq!(changed, vec!["b.md"]);
     }

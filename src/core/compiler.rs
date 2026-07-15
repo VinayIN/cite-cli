@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use crate::cache::{self, BuildCache};
-use crate::metadata::{Podcast, TimelineEntry};
-use crate::project::ProjectContext;
-use crate::report::{CiteError, Style, styled};
+use crate::core::cache::{self, BuildCache};
+use crate::core::metadata::{Podcast, TimelineEntry};
+use crate::core::project::ProjectContext;
+use crate::core::{CiteError, Style, styled};
 use serde::Serialize;
 use tracing::instrument;
 use uuid::Uuid;
@@ -35,7 +35,6 @@ impl From<&Podcast> for BundlePodcast {
     }
 }
 
-/// Output timeline model emitted by `compile`.
 #[derive(Debug, Clone, Serialize)]
 pub struct BundleTimeline {
     pub id: String,
@@ -49,27 +48,27 @@ pub enum CompileOutcome {
 
 impl CompileOutcome {
     pub fn print(&self) {
+        for line in self.to_lines() {
+            eprintln!("{line}");
+        }
+    }
+
+    pub fn to_lines(&self) -> Vec<String> {
         match self {
             CompileOutcome::UpToDate => {
-                eprintln!(
-                    "{}",
-                    styled("Nothing to rebuild — all files up to date", Style::Success)
-                );
+                vec![styled(
+                    "Nothing to rebuild — all files up to date",
+                    Style::Success,
+                )]
             }
-            CompileOutcome::Complete { podcasts, artifact } => {
-                eprintln!(
-                    "{}",
-                    styled(format!("Built {} podcast items", podcasts), Style::Info)
-                );
-                eprintln!(
-                    "{}",
-                    styled(
-                        format!("Build artifact at {}", artifact.display()),
-                        Style::Info
-                    )
-                );
-                eprintln!("{}", styled("Build completed successfully", Style::Success));
-            }
+            CompileOutcome::Complete { podcasts, artifact } => vec![
+                styled(format!("Built {} podcast items", podcasts), Style::Info),
+                styled(
+                    format!("Build artifact at {}", artifact.display()),
+                    Style::Info,
+                ),
+                styled("Build completed successfully", Style::Success),
+            ],
         }
     }
 }
@@ -316,7 +315,7 @@ fn format_bib_date(year: &Option<String>, month: &Option<String>) -> String {
             "aug" | "august" => "08",
             "sep" | "september" => "09",
             "oct" | "october" => "10",
-            "nov" | "november" => "11",
+            "nov" | "novermber" => "11",
             "dec" | "december" => "12",
             _ => return None,
         })

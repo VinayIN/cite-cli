@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
-use crate::report::{CiteError, Style, styled};
-use crate::{compiler, deploy, doctor, project, scaffold, uninstall, upgrade};
+use crate::core::report::{CiteError, Style, styled};
+use crate::core::{compiler, deploy, doctor, project, scaffold, uninstall, upgrade};
 
 #[derive(Parser)]
 #[command(
@@ -13,14 +13,14 @@ use crate::{compiler, deploy, doctor, project, scaffold, uninstall, upgrade};
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<CliCommand>,
 
     #[arg(global = true, short, long)]
     pub verbose: bool,
 }
 
 #[derive(Subcommand)]
-pub enum Command {
+pub enum CliCommand {
     /// Create a new project with recommended structure and starter files
     Init {
         name: String,
@@ -99,23 +99,7 @@ fn load_project(root: &Path) -> Result<project::ProjectContext, CiteError> {
 
 fn discover_projects(path: Option<String>) -> Vec<PathBuf> {
     let root = resolve_path(path);
-    let mut projects = Vec::new();
-
-    if root.join("cite.toml").exists() {
-        projects.push(root.clone());
-    }
-
-    if let Ok(entries) = std::fs::read_dir(&root) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() && p != root && p.join("cite.toml").exists() {
-                projects.push(p);
-            }
-        }
-    }
-
-    projects.sort();
-    projects
+    project::discover_projects(&root)
 }
 
 fn load_projects(
@@ -138,15 +122,13 @@ fn print_project_header(name: &str) {
     eprintln!("{}", styled(format!("── {name} ──"), Style::Header));
 }
 
-impl Command {
+impl CliCommand {
     pub async fn execute(self) -> Result<(), CiteError> {
         match self {
-            Command::Init { name, path } => {
+            CliCommand::Init { name, path } => {
                 let root = match path {
                     Some(p) => PathBuf::from(p),
-                    None => std::env::current_dir()
-                        .unwrap_or_else(|_| PathBuf::from("."))
-                        .join(&name),
+                    None => resolve_path(None).join(&name),
                 };
                 let report = scaffold::init_project(&name, &root)?;
 
@@ -168,7 +150,7 @@ impl Command {
                 );
                 Ok(())
             }
-            Command::Lint { path } => {
+            CliCommand::Lint { path } => {
                 let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
@@ -193,7 +175,7 @@ impl Command {
                 }
                 Ok(())
             }
-            Command::Build { path, force } => {
+            CliCommand::Build { path, force } => {
                 let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
@@ -220,7 +202,7 @@ impl Command {
                     Ok(())
                 }
             }
-            Command::Deploy { path, dry_run } => {
+            CliCommand::Deploy { path, dry_run } => {
                 let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
@@ -231,9 +213,12 @@ impl Command {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
                     }
-                    if let Err(e) = deploy::deploy(ctx, dry_run).await {
-                        warn!("Deploy failed: {e}");
-                        has_errors = true;
+                    match deploy::deploy(ctx, dry_run).await {
+                        Ok(msg) => eprintln!("{msg}"),
+                        Err(e) => {
+                            warn!("Deploy failed: {e}");
+                            has_errors = true;
+                        }
                     }
                 }
                 if has_errors {
@@ -244,7 +229,7 @@ impl Command {
                     Ok(())
                 }
             }
-            Command::Status { path } => {
+            CliCommand::Status { path } => {
                 let Some(projects) = load_projects(path, "No projects found")? else {
                     return Ok(());
                 };
@@ -287,7 +272,7 @@ impl Command {
                 }
                 Ok(())
             }
-            Command::Doctor { path } => {
+            CliCommand::Doctor { path } => {
                 let root = resolve_path(path.clone());
                 let Some(projects) = load_projects(path, "")? else {
                     info!("Running diagnostics");
@@ -323,7 +308,7 @@ impl Command {
                 }
                 Ok(())
             }
-            Command::Clean { path } => {
+            CliCommand::Clean { path } => {
                 let Some(projects) = load_projects(path, "No projects found")? else {
                     return Ok(());
                 };
@@ -337,12 +322,14 @@ impl Command {
                 }
                 Ok(())
             }
-            Command::Rollback { id, path } => {
+            CliCommand::Rollback { id, path } => {
                 let root = resolve_path(path);
                 let ctx = load_project(&root)?;
-                deploy::rollback(&ctx, &id).await
+                let msg = deploy::rollback(&ctx, &id).await?;
+                eprintln!("{msg}");
+                Ok(())
             }
-            Command::Login {
+            CliCommand::Login {
                 email,
                 password,
                 path,
@@ -351,8 +338,12 @@ impl Command {
                 let ctx = load_project(&root)?;
                 deploy::login(&ctx, email, password).await
             }
-            Command::Upgrade => upgrade::upgrade().await,
-            Command::Uninstall { force } => uninstall::uninstall(force),
+            CliCommand::Upgrade => {
+                let msg = upgrade::upgrade().await?;
+                eprintln!("{msg}");
+                Ok(())
+            }
+            CliCommand::Uninstall { force } => uninstall::uninstall(force),
         }
     }
 }

@@ -1,13 +1,15 @@
-use crate::manifest::BackendConfig;
-use crate::project::ProjectContext;
-use crate::report::{CiteError, Style, styled};
+use std::path::PathBuf;
+
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::RequestBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
 use tracing::{info, instrument, warn};
 use uuid::Uuid;
+
+use crate::core::manifest::BackendConfig;
+use crate::core::project::ProjectContext;
+use crate::core::{CiteError, Style, styled};
 
 const STORAGE_BUCKET: &str = "assets";
 
@@ -96,7 +98,7 @@ async fn ensure_success(
 }
 
 #[instrument(skip(ctx), fields(project = %ctx.manifest.project.name, dry_run))]
-pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError> {
+pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteError> {
     let Some(backend) = &ctx.manifest.backend else {
         return Err(CiteError::Config(
             "No [backend] section in cite.toml (set staging_url)".to_string(),
@@ -109,7 +111,7 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
             "No build artifact found. Run 'cite-cli build' first.".to_string(),
         ));
     }
-    let bundle_str = std::fs::read_to_string(&bundle_path)?;
+    let bundle_str = tokio::fs::read_to_string(&bundle_path).await?;
     let bundle: Value = serde_json::from_str(&bundle_str)?;
     let deployment_id = Uuid::new_v4().to_string();
     let project_name = bundle
@@ -143,7 +145,7 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
         if !artist_id.is_empty() {
             info!("Artist ID: {artist_id}");
         }
-        return Ok(());
+        return Ok("Dry run complete".to_string());
     }
 
     let artist_id = Uuid::parse_str(&artist_id).map_err(|_| {
@@ -182,17 +184,13 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<(), CiteError
     let podcast_count = record.news_ids.len();
     let timeline_count = record.timeline_ids.len();
     let asset_count = record.asset_paths.len();
-    eprintln!(
-        "{}",
-        styled(
-            format!(
-                "Deployed {podcast_count} podcast(s), {timeline_count} timeline(s), {asset_count} asset(s)"
-            ),
-            Style::Success,
-        )
-    );
 
-    Ok(())
+    Ok(styled(
+        format!(
+            "Deployed {podcast_count} podcast(s), {timeline_count} timeline(s), {asset_count} asset(s)"
+        ),
+        Style::Success,
+    ))
 }
 
 async fn deploy_podcast(
@@ -379,7 +377,7 @@ async fn delete_storage_object(dctx: &DeployContext, storage_path: &str) -> Resu
 }
 
 #[instrument(skip(ctx), fields(id = %deployment_id))]
-pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<(), CiteError> {
+pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<String, CiteError> {
     let Some(backend) = &ctx.manifest.backend else {
         return Err(CiteError::Config(
             "No [backend] section in cite.toml (set staging_url)".to_string(),
@@ -422,8 +420,7 @@ pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<(), C
         warn!("Failed to remove local deployment record: {e}");
     }
 
-    eprintln!("{}", styled("Rollback complete", Style::Success));
-    Ok(())
+    Ok(styled("Rollback complete", Style::Success))
 }
 
 #[derive(Deserialize)]
@@ -463,18 +460,12 @@ fn resolve_bearer(backend: &BackendConfig, session: Option<&Session>) -> Result<
     if let Some(s) = session {
         return Ok(s.access_token.clone());
     }
-    if backend
-        .staging_service_key
-        .as_deref()
-        .map(|s| s.is_empty())
-        .unwrap_or(true)
-    {
-        Err(CiteError::Auth(
+    match backend.staging_service_key.as_deref() {
+        Some(key) if !key.is_empty() => Ok(key.to_string()),
+        _ => Err(CiteError::Auth(
             "Not logged in and no backend.staging_service_key configured. Run 'cite-cli login' or set the key in cite.toml"
                 .to_string(),
-        ))
-    } else {
-        Ok(backend.staging_service_key.clone().unwrap_or_default())
+        )),
     }
 }
 
@@ -491,8 +482,7 @@ pub async fn login(
     if backend
         .staging_service_key
         .as_deref()
-        .map(|s| s.is_empty())
-        .unwrap_or(true)
+        .is_none_or(|s| s.is_empty())
     {
         return Err(CiteError::Auth(
             "backend.staging_service_key (Supabase anon/publishable key) is required for login"
@@ -1086,7 +1076,6 @@ fn mime_for_extension(ext: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::BackendConfig;
 
     fn backend(url: &str, key: &str) -> BackendConfig {
         BackendConfig {
@@ -1158,11 +1147,12 @@ mod tests {
 #[cfg(test)]
 mod http_tests {
     use super::*;
-    use crate::compiler;
-    use crate::manifest::{
-        BackendConfig, BuildConfig, CompilerConfig, Manifest, ProjectConfig, ValidationConfig,
+    use crate::core::compiler;
+    use crate::core::manifest::{
+        AssetsConfig, BackendConfig, BuildConfig, CompilerConfig, Manifest, ProjectConfig,
+        ValidationConfig,
     };
-    use crate::project::ProjectContext;
+    use crate::core::project::ProjectContext;
     use httpmock::Method::PATCH;
     use httpmock::prelude::*;
     use std::path::Path;
@@ -1181,7 +1171,7 @@ mod http_tests {
                 staging_service_key: Some("key".into()),
             }),
             compiler: CompilerConfig::default(),
-            assets: crate::manifest::AssetsConfig::default(),
+            assets: AssetsConfig::default(),
             validation: ValidationConfig::default(),
         };
         std::fs::write(dir.join("cite.toml"), toml::to_string(&manifest).unwrap()).unwrap();

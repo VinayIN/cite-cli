@@ -1,8 +1,7 @@
 use std::io::Write;
-
 use tracing::info;
 
-use crate::report::{CiteError, Style, styled};
+use crate::core::{CiteError, Style, styled};
 
 pub fn uninstall(force: bool) -> Result<(), CiteError> {
     let current_exe = std::env::current_exe()

@@ -1,7 +1,8 @@
-use crate::manifest::Manifest;
-use crate::metadata::Metadata;
-use crate::report::CiteError;
 use std::path::{Path, PathBuf};
+
+use crate::core::CiteError;
+use crate::core::manifest::Manifest;
+use crate::core::metadata::Metadata;
 use tracing::instrument;
 
 #[derive(Debug, Clone)]
@@ -70,4 +71,24 @@ impl ProjectContext {
         }
         Ok(())
     }
+}
+
+pub fn discover_projects(root: &Path) -> Vec<PathBuf> {
+    let mut projects = Vec::new();
+
+    if root.join("cite.toml").exists() {
+        projects.push(root.to_path_buf());
+    }
+
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() && p != root && p.join("cite.toml").exists() {
+                projects.push(p);
+            }
+        }
+    }
+
+    projects.sort();
+    projects
 }
