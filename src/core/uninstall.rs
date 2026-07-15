@@ -1,7 +1,6 @@
-use std::io::Write;
-use tracing::info;
+use tracing::{info, warn};
 
-use crate::core::{CiteError, Style, styled};
+use crate::core::CiteError;
 
 pub fn uninstall(force: bool) -> Result<(), CiteError> {
     let current_exe = std::env::current_exe()
@@ -14,18 +13,15 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
     info!("cite-cli installed at: {}", current_exe.display());
 
     if !force {
-        eprintln!();
-        eprintln!("This will delete the binary. Shell config files might NOT be modified.");
-        eprintln!();
-        eprint!("Are you sure? [y/N] ");
-        std::io::stdout().flush()?;
+        warn!("This will delete the binary. Shell config files might NOT be modified.");
+        info!("Are you sure? [y/N] ");
 
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
         match input.trim().to_lowercase().as_str() {
             "y" | "yes" => {}
             _ => {
-                eprintln!("{}", styled("Uninstall cancelled", Style::Error));
+                warn!("Uninstall cancelled");
                 return Ok(());
             }
         }
@@ -59,17 +55,11 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
     });
 
     if found {
-        eprintln!();
         info!("Shell config files reference the install directory");
-        eprintln!("  Edit ~/.zshrc, ~/.bashrc, etc. and remove lines containing:");
-        eprintln!("    {install_dir_str}");
-        eprintln!("  Then restart your shell or run: source ~/.zshrc");
-    }
-
-    eprintln!();
-    eprintln!(
-        "{}",
-        styled("cite-cli has been uninstalled.", Style::Success)
-    );
+        info!("  Edit ~/.zshrc, ~/.bashrc, etc. and remove lines containing:");
+        info!("    {install_dir_str}");
+        info!("  Then restart your shell or run: source ~/.zshrc");
+    };
+    info!("cite-cli has been uninstalled.");
     Ok(())
 }

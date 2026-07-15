@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::core::CiteError;
 use crate::core::manifest::Manifest;
 use crate::core::metadata::Metadata;
-use tracing::instrument;
+use tracing::{info, instrument};
 
 #[derive(Debug, Clone)]
 pub struct ProjectContext {
@@ -70,6 +70,38 @@ impl ProjectContext {
             std::fs::remove_file(&cache)?;
         }
         Ok(())
+    }
+}
+
+pub fn print_status(ctx: &ProjectContext) {
+    info!("Name: {}", ctx.manifest.project.name);
+    info!("Root: {}", ctx.root.display());
+    info!("Artist ID: {}", ctx.manifest.project.artist_id);
+    if let Some(b) = &ctx.manifest.backend
+        && let Some(u) = &b.staging_url
+    {
+        info!("Staging: {u}");
+    }
+    info!("Podcasts: {}", ctx.metadata.podcasts.len());
+    let build_path = ctx.build_dir().join("content.json");
+    if build_path.exists() {
+        info!("Build: exists");
+        if let Ok(meta) = std::fs::metadata(&build_path)
+            && let Ok(modified) = meta.modified()
+            && let Ok(elapsed) = modified.elapsed()
+        {
+            let secs = elapsed.as_secs();
+            let since = if secs < 60 {
+                "just now".to_string()
+            } else if secs < 3600 {
+                format!("{}m ago", secs / 60)
+            } else {
+                format!("{}h ago", secs / 3600)
+            };
+            info!("Built: {since}");
+        }
+    } else {
+        info!("Build: not built");
     }
 }
 

@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use tracing::instrument;
+use tracing::{info, instrument};
 
 use crate::core::CiteError;
 use crate::core::manifest::Manifest;
@@ -20,22 +20,6 @@ pub struct InitReport {
     pub files_skipped: Vec<String>,
 }
 
-impl InitReport {
-    pub fn to_lines(&self) -> Vec<String> {
-        let mut lines = Vec::new();
-        for d in &self.directories_created {
-            lines.push(format!("Created directory: {d}"));
-        }
-        for f in &self.files_created {
-            lines.push(format!("Created file: {f}"));
-        }
-        for f in &self.files_skipped {
-            lines.push(format!("Skipped: {f}"));
-        }
-        lines
-    }
-}
-
 #[instrument(skip(root), fields(project = %name))]
 pub fn init_project(name: &str, root: &Path) -> Result<InitReport, CiteError> {
     let mut report = InitReport {
@@ -46,15 +30,16 @@ pub fn init_project(name: &str, root: &Path) -> Result<InitReport, CiteError> {
 
     if !root.exists() {
         fs::create_dir_all(root)?;
-        report
-            .directories_created
-            .push(root.to_string_lossy().to_string());
+        let d = root.to_string_lossy().to_string();
+        info!("Created directory: {d}");
+        report.directories_created.push(d);
     }
 
     for sub in ["content", "assets/audio", "assets/image"] {
         let path = root.join(sub);
         if !path.exists() {
             fs::create_dir_all(&path)?;
+            info!("Created directory: {sub}");
             report.directories_created.push(sub.to_string());
         }
     }
@@ -62,21 +47,23 @@ pub fn init_project(name: &str, root: &Path) -> Result<InitReport, CiteError> {
     let manifest_path = root.join("cite.toml");
     if !manifest_path.exists() {
         fs::write(&manifest_path, manifest_template(name)?)?;
+        info!("Created file: cite.toml");
         report.files_created.push("cite.toml".to_string());
     } else {
-        report
-            .files_skipped
-            .push("cite.toml (already exists)".to_string());
+        let msg = "cite.toml (already exists)".to_string();
+        info!("Skipped: {msg}");
+        report.files_skipped.push(msg);
     }
 
     let meta_path = root.join("metadata.yml");
     if !meta_path.exists() {
         fs::write(&meta_path, metadata_template()?)?;
+        info!("Created file: metadata.yml");
         report.files_created.push("metadata.yml".to_string());
     } else {
-        report
-            .files_skipped
-            .push("metadata.yml (already exists)".to_string());
+        let msg = "metadata.yml (already exists)".to_string();
+        info!("Skipped: {msg}");
+        report.files_skipped.push(msg);
     }
 
     let gitignore_path = root.join(".gitignore");
@@ -85,11 +72,12 @@ pub fn init_project(name: &str, root: &Path) -> Result<InitReport, CiteError> {
             &gitignore_path,
             format!("{AUTO_GEN_HEADER}\nbuild/\n.cite-cache.json\n"),
         )?;
+        info!("Created file: .gitignore");
         report.files_created.push(".gitignore".to_string());
     } else {
-        report
-            .files_skipped
-            .push(".gitignore (already exists)".to_string());
+        let msg = ".gitignore (already exists)".to_string();
+        info!("Skipped: {msg}");
+        report.files_skipped.push(msg);
     }
 
     Ok(report)

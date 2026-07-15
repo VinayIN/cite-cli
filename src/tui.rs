@@ -10,6 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 use tokio::sync::mpsc;
+use tracing::{error, info};
 
 use crate::core::CiteError;
 use crate::core::project::{self, ProjectContext};
@@ -24,7 +25,7 @@ impl Drop for TerminalGuard {
 
 // Main entry point for the TUI
 
-pub async fn run_tui() -> Result<(), CiteError> {
+pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>) -> Result<(), CiteError> {
     let mut terminal = ratatui::init();
     let _guard = TerminalGuard;
     terminal
@@ -41,25 +42,28 @@ pub async fn run_tui() -> Result<(), CiteError> {
 
         tokio::select! {
             biased;
-            // 1. Prioritize receiving task results
-            Some(lines) = app.rx.recv() => {
-                app.output.extend(lines);
-                app.output.push(String::new());
+            Some(()) = app.rx.recv() => {
                 app.busy = false;
-                app.refresh_projects();
-                app.scroll = app.output.len().saturating_sub(1); // Auto-scroll to bottom
             }
-            // 2. Handle UI events with a small sleep to yield to tokio runtime
             _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                if event::poll(Duration::from_millis(10)).map_err(|e| CiteError::Config(format!("{e}")))? {
-                    if let Event::Key(key) = event::read().map_err(|e| CiteError::Config(format!("{e}")))? {
-                        if key.kind == KeyEventKind::Press {
-                            if key.code == KeyCode::Esc || (key.code == KeyCode::Char('q') && !matches!(app.focus, Focus::Args)) {
-                                break;
-                            }
-                            app.handle_key(key);
-                        }
+                let mut new_logs = false;
+                while let Ok(line) = log_rx.try_recv() {
+                    app.log.push(line);
+                    new_logs = true;
+                }
+                if new_logs {
+                    app.scroll = app.log.len().saturating_sub(1);
+                }
+                if event::poll(Duration::from_millis(10))
+                    .map_err(|e| CiteError::Config(format!("{e}")))?
+                    && let Event::Key(key) =
+                        event::read().map_err(|e| CiteError::Config(format!("{e}")))?
+                    && key.kind == KeyEventKind::Press
+                {
+                    if key.code == KeyCode::Esc {
+                        break;
                     }
+                    app.handle_key(key);
                 }
             }
         }
@@ -75,6 +79,19 @@ pub struct Cmd {
     pub desc: &'static str,
     pub args_hint: &'static str,
     pub needs_project: bool,
+    pub id: CommandId,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum CommandId {
+    Init,
+    Build,
+    Lint,
+    Status,
+    Doctor,
+    Deploy,
+    Rollback,
+    Clean,
 }
 
 pub const CMDS: &[Cmd] = &[
@@ -83,48 +100,56 @@ pub const CMDS: &[Cmd] = &[
         desc: "Create a new project with starter files",
         args_hint: "<name>",
         needs_project: false,
+        id: CommandId::Init,
     },
     Cmd {
         label: "Build",
         desc: "Execute the compiler protocol and build artifact",
         args_hint: "[--force]",
         needs_project: true,
+        id: CommandId::Build,
     },
     Cmd {
         label: "Lint",
         desc: "Run linting rules (naming, style, word counts)",
         args_hint: "",
         needs_project: true,
+        id: CommandId::Lint,
     },
     Cmd {
         label: "Status",
         desc: "Show project health, validation, and sync state",
         args_hint: "",
         needs_project: true,
+        id: CommandId::Status,
     },
     Cmd {
         label: "Doctor",
         desc: "Diagnose common project issues and configuration",
         args_hint: "",
         needs_project: true,
+        id: CommandId::Doctor,
     },
     Cmd {
         label: "Deploy",
         desc: "Deploy the built project to Supabase staging",
         args_hint: "[--dry-run]",
         needs_project: true,
+        id: CommandId::Deploy,
     },
     Cmd {
         label: "Rollback",
         desc: "Roll back to the previous deployment",
         args_hint: "<deployment id>",
         needs_project: true,
+        id: CommandId::Rollback,
     },
     Cmd {
         label: "Clean",
         desc: "Remove build artifacts, cache, and temp files",
         args_hint: "",
         needs_project: true,
+        id: CommandId::Clean,
     },
 ];
 
@@ -133,7 +158,7 @@ pub enum Focus {
     Projects,
     Commands,
     Args,
-    Output,
+    Logs,
 }
 
 impl Focus {
@@ -142,7 +167,7 @@ impl Focus {
             Focus::Projects => "Projects",
             Focus::Commands => "Commands",
             Focus::Args => "Args",
-            Focus::Output => "Output",
+            Focus::Logs => "Log",
         }
     }
 }
@@ -153,12 +178,12 @@ pub struct AppState {
     pub sel_project: usize,
     pub focus: Focus,
     pub sel_cmd: usize,
-    pub output: Vec<String>,
+    pub log: Vec<String>,
     pub scroll: usize,
     pub busy: bool,
     pub arg_input: String,
-    rx: mpsc::Receiver<Vec<String>>,
-    tx: mpsc::Sender<Vec<String>>,
+    rx: mpsc::Receiver<()>,
+    tx: mpsc::Sender<()>,
 }
 
 impl AppState {
@@ -172,7 +197,7 @@ impl AppState {
             sel_project: 0,
             focus: Focus::Commands,
             sel_cmd: 0,
-            output: vec![],
+            log: vec![],
             scroll: 0,
             busy: false,
             arg_input: String::new(),
@@ -227,19 +252,19 @@ impl AppState {
                         if has_args {
                             Focus::Args
                         } else {
-                            Focus::Output
+                            Focus::Logs
                         }
                     }
-                    Focus::Args => Focus::Output,
-                    Focus::Output => Focus::Projects,
+                    Focus::Args => Focus::Logs,
+                    Focus::Logs => Focus::Projects,
                 };
             }
             KeyCode::BackTab => {
                 self.focus = match self.focus {
-                    Focus::Projects => Focus::Output,
+                    Focus::Projects => Focus::Logs,
                     Focus::Commands => Focus::Projects,
                     Focus::Args => Focus::Commands,
-                    Focus::Output => {
+                    Focus::Logs => {
                         if has_args {
                             Focus::Args
                         } else {
@@ -256,7 +281,7 @@ impl AppState {
                         self.focus = Focus::Commands;
                     }
                 }
-                Focus::Output => self.scroll = self.scroll.saturating_sub(1),
+                Focus::Logs => self.scroll = self.scroll.saturating_sub(1),
             },
             KeyCode::Down => match self.focus {
                 Focus::Projects => {
@@ -269,7 +294,7 @@ impl AppState {
                         self.focus = Focus::Commands;
                     }
                 }
-                Focus::Output => self.scroll = self.scroll.saturating_add(1),
+                Focus::Logs => self.scroll = self.scroll.saturating_add(1),
             },
             KeyCode::Enter => match self.focus {
                 Focus::Projects => self.focus = Focus::Commands,
@@ -283,8 +308,8 @@ impl AppState {
             }
             KeyCode::Char('r') if !matches!(self.focus, Focus::Args) => {
                 self.refresh_projects();
-                self.output.clear();
-                self.output.push("Refreshed".into());
+                self.log.clear();
+                self.log.push("Refreshed".into());
                 self.scroll = 0;
             }
             KeyCode::Char(ch) => {
@@ -293,12 +318,12 @@ impl AppState {
                 }
             }
             KeyCode::PageUp => {
-                if matches!(self.focus, Focus::Output) {
+                if matches!(self.focus, Focus::Logs) {
                     self.scroll = self.scroll.saturating_sub(10);
                 }
             }
             KeyCode::PageDown => {
-                if matches!(self.focus, Focus::Output) {
+                if matches!(self.focus, Focus::Logs) {
                     self.scroll = self.scroll.saturating_add(10);
                 }
             }
@@ -311,7 +336,7 @@ impl AppState {
         let cmd = &CMDS[self.sel_cmd];
 
         if cmd.needs_project && root.is_none() {
-            self.output
+            self.log
                 .push("!! No projects found — select or init a project first".into());
             return;
         }
@@ -324,7 +349,7 @@ impl AppState {
             format!(" ({raw_args})")
         };
 
-        self.output.push(format!(
+        self.log.push(format!(
             ">> {}{} {}",
             cmd.label,
             arg_display,
@@ -334,22 +359,21 @@ impl AppState {
         ));
 
         self.busy = true;
+        let id = cmd.id;
         let tx = self.tx.clone();
-        let idx = self.sel_cmd;
 
         tokio::spawn(async move {
-            let result = match idx {
-                0 => exec_init(root, &raw_args).await,
-                1 => exec_build(root, &raw_args).await,
-                2 => exec_lint(root).await,
-                3 => exec_status(root).await,
-                4 => exec_doctor(root).await,
-                5 => exec_deploy(root, &raw_args).await,
-                6 => exec_rollback(root, &raw_args).await,
-                7 => exec_clean(root).await,
-                _ => vec!["Unknown command".into()],
-            };
-            let _ = tx.send(result).await;
+            match id {
+                CommandId::Init => exec_init(root, raw_args).await,
+                CommandId::Build => exec_build(root, raw_args).await,
+                CommandId::Lint => exec_lint(root, raw_args).await,
+                CommandId::Status => exec_status(root, raw_args).await,
+                CommandId::Doctor => exec_doctor(root, raw_args).await,
+                CommandId::Deploy => exec_deploy(root, raw_args).await,
+                CommandId::Rollback => exec_rollback(root, raw_args).await,
+                CommandId::Clean => exec_clean(root, raw_args).await,
+            }
+            let _ = tx.send(()).await;
         });
     }
 }
@@ -360,7 +384,7 @@ fn block(title: &str, focused: bool) -> Block<'_> {
     let border_style = if focused {
         Style::new().fg(Color::Cyan).bold()
     } else {
-        Style::new().fg(Color::DarkGray)
+        Style::new()
     };
     Block::default()
         .borders(Borders::ALL)
@@ -400,7 +424,7 @@ fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
     render_projects(frame, left, app);
     render_cmds(frame, cmd_list, app);
     render_cmd_doc(frame, cmd_doc, app);
-    render_output(frame, bot, app);
+    render_log(frame, bot, app);
 }
 
 fn render_projects(frame: &mut Frame, area: Rect, app: &AppState) {
@@ -412,12 +436,12 @@ fn render_projects(frame: &mut Frame, area: Rect, app: &AppState) {
         .map(|(i, name)| {
             let is_selected = i == app.sel_project;
             let prefix = if is_selected { "▸ " } else { "  " };
-            let style = if is_selected && is_focused {
-                Style::new().fg(Color::Black).bg(Color::Cyan)
+            let style = if is_focused && is_selected {
+                Style::new().bold().bg(Color::Cyan)
             } else if is_selected {
-                Style::new().fg(Color::Cyan)
+                Style::new().bold().fg(Color::Cyan)
             } else {
-                Style::new().fg(Color::Gray)
+                Style::new()
             };
             ListItem::new(Line::from(Span::styled(format!("{prefix}{name}"), style)))
         })
@@ -435,12 +459,12 @@ fn render_cmds(frame: &mut Frame, area: Rect, app: &AppState) {
         .map(|(i, cmd)| {
             let is_selected = i == app.sel_cmd;
             let prefix = if is_selected { "▸ " } else { "  " };
-            let style = if is_selected && is_focused {
-                Style::new().fg(Color::Black).bg(Color::Cyan)
+            let style = if is_focused && is_selected {
+                Style::new().bold().bg(Color::Cyan)
             } else if is_selected {
-                Style::new().fg(Color::Cyan)
+                Style::new().bold().fg(Color::Cyan)
             } else {
-                Style::new().fg(Color::Gray)
+                Style::new()
             };
             ListItem::new(Line::from(Span::styled(
                 format!("{prefix}{}", cmd.label),
@@ -458,30 +482,28 @@ fn render_cmd_doc(frame: &mut Frame, area: Rect, app: &AppState) {
     let has_args = !cmd.args_hint.is_empty();
 
     let mut lines = vec![
-        Line::from(Span::styled(cmd.label, Style::new().bold().fg(Color::Cyan))),
+        Line::from(Span::styled(cmd.label, Style::new().bold())),
         Line::from(""),
         Line::from(cmd.desc),
     ];
 
     if has_args {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Arguments:",
-            Style::new().bold().fg(Color::Gray),
-        )));
+        lines.push(Line::from(Span::raw("Arguments:")));
         lines.push(Line::from(Span::raw(format!("  {}", cmd.args_hint))));
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled("Input: ", Style::new().bold().fg(Color::Gray)),
+            Span::raw("Input: "),
             Span::styled(
                 if app.arg_input.is_empty() {
-                    "Type arguments here..."
+                    "Awating input..."
                 } else {
                     &app.arg_input
                 },
                 if is_focused {
                     Style::new()
+                        .bold()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::UNDERLINED)
                 } else {
@@ -492,20 +514,22 @@ fn render_cmd_doc(frame: &mut Frame, area: Rect, app: &AppState) {
     }
 
     frame.render_widget(
-        Paragraph::new(Text::from(lines)).block(block("Details", is_focused)),
+        Paragraph::new(Text::from(lines))
+            .block(block("Details", is_focused))
+            .wrap(Wrap { trim: false }),
         area,
     );
 }
 
-fn render_output(frame: &mut Frame, area: Rect, app: &AppState) {
-    let lines: Vec<Line> = app.output.iter().map(|l| Line::raw(l.clone())).collect();
+fn render_log(frame: &mut Frame, area: Rect, app: &AppState) {
+    let lines: Vec<Line> = app.log.iter().map(|l| Line::raw(l.as_str())).collect();
 
     let visible_lines = area.height.saturating_sub(3) as usize;
-    let max_scroll = app.output.len().saturating_sub(visible_lines);
+    let max_scroll = app.log.len().saturating_sub(visible_lines);
     let scroll_y = app.scroll.min(max_scroll) as u16;
 
     let para = Paragraph::new(Text::from(lines))
-        .block(block("Output", matches!(app.focus, Focus::Output)))
+        .block(block("Logs", matches!(app.focus, Focus::Logs)))
         .scroll((scroll_y, 0))
         .wrap(Wrap { trim: false });
 
@@ -516,15 +540,9 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
     let mut left_spans = vec![];
 
     if app.busy {
-        left_spans.push(Span::styled(
-            " RUNNING ",
-            Style::new().fg(Color::Black).bg(Color::Yellow),
-        ));
+        left_spans.push(Span::styled(" RUNNING ", Style::new().bg(Color::Yellow)));
     } else {
-        left_spans.push(Span::styled(
-            " READY ",
-            Style::new().fg(Color::Black).bg(Color::Green),
-        ));
+        left_spans.push(Span::styled(" READY ", Style::new().bg(Color::Green)));
     }
 
     left_spans.push(Span::raw("  "));
@@ -540,7 +558,7 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
             .get(app.sel_project)
             .cloned()
             .unwrap_or_default();
-        left_spans.push(Span::styled(proj_name, Style::new().fg(Color::Gray)));
+        left_spans.push(Span::styled(proj_name, Style::new()));
     }
 
     if app.busy {
@@ -552,7 +570,7 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
         ));
     }
 
-    let right_text = " [Tab/Shift+Tab]:Cycle  [↑/↓]:Nav  [Enter]:Exec  [r]:Refresh  [PgUp/Dn]:Scroll  [Esc/q]:Quit ";
+    let right_text = " [Tab/Shift+Tab]:Cycle  [↑/↓]:Nav  [Enter]:Exec  [r]:Refresh  [PgUp/Dn]:Scroll  [Esc]:Quit ";
 
     let [left_area, right_area] = Layout::horizontal([
         Constraint::Fill(1),
@@ -576,7 +594,7 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
 
 // Command executors
 
-async fn exec_init(root: Option<PathBuf>, raw: &str) -> Vec<String> {
+async fn exec_init(root: Option<PathBuf>, raw: String) {
     let parent = root
         .as_deref()
         .and_then(|r| r.parent())
@@ -586,143 +604,123 @@ async fn exec_init(root: Option<PathBuf>, raw: &str) -> Vec<String> {
     let target = parent.join(name);
 
     match scaffold::init_project(name, &target) {
-        Ok(report) => {
-            let mut l = report.to_lines();
-            l.push(format!("Project '{name}' created at {}", target.display()));
-            l
-        }
-        Err(e) => vec![format!("Init failed: {e}")],
+        Ok(_) => info!("Project '{name}' created at {}", target.display()),
+        Err(e) => error!("Init failed: {e}"),
     }
 }
 
-async fn exec_build(root: Option<PathBuf>, raw: &str) -> Vec<String> {
+async fn exec_build(root: Option<PathBuf>, raw: String) {
     let Some(root) = root else {
-        return vec!["No project selected".into()];
+        error!("No project selected");
+        return;
     };
 
     let force = raw.split_whitespace().any(|w| w == "--force");
 
     match ProjectContext::load(&root) {
         Ok(ctx) => match compiler::compile(&ctx, force).await {
-            Ok(r) => r.to_lines(),
-            Err(e) => vec![format!("Build failed: {e}")],
+            Ok(_) => {}
+            Err(e) => error!("Build failed: {e}"),
         },
-        Err(e) => vec![format!("{e}")],
+        Err(e) => error!("{e}"),
     }
 }
 
-async fn exec_lint(root: Option<PathBuf>) -> Vec<String> {
+async fn exec_lint(root: Option<PathBuf>, _raw: String) {
     let Some(root) = root else {
-        return vec!["No project selected".into()];
+        error!("No project selected");
+        return;
     };
 
     match ProjectContext::load(&root) {
         Ok(ctx) => {
-            let mut lines = doctor::lint_all(&ctx).to_lines();
-            if lines.is_empty() {
-                lines.push("Lint complete — no issues found".into());
-            }
-            lines
+            let outcome = doctor::lint_all(&ctx);
+            outcome.emit();
         }
-        Err(e) => vec![format!("{e}")],
+        Err(e) => error!("{e}"),
     }
 }
 
-async fn exec_status(root: Option<PathBuf>) -> Vec<String> {
+async fn exec_status(root: Option<PathBuf>, _raw: String) {
     let Some(root) = root else {
-        return vec!["No project selected".into()];
+        error!("No project selected");
+        return;
     };
 
     match ProjectContext::load(&root) {
-        Ok(ctx) => {
-            let mut lines = Vec::new();
-            lines.push(format!("Name: {}", ctx.manifest.project.name));
-            lines.push(format!("Root: {}", ctx.root.display()));
-            lines.push(format!("Artist ID: {}", ctx.manifest.project.artist_id));
-            if let Some(b) = &ctx.manifest.backend {
-                if let Some(u) = &b.staging_url {
-                    lines.push(format!("Staging: {u}"));
-                }
-            }
-            lines.push(format!("Podcasts: {}", ctx.metadata.podcasts.len()));
-
-            let build_path = ctx.build_dir().join("content.json");
-            lines.push(if build_path.exists() {
-                "Build: exists".into()
-            } else {
-                "Build: not built".into()
-            });
-            lines
-        }
-        Err(e) => vec![format!("{e}")],
+        Ok(ctx) => project::print_status(&ctx),
+        Err(e) => error!("{e}"),
     }
 }
 
-async fn exec_doctor(root: Option<PathBuf>) -> Vec<String> {
+async fn exec_doctor(root: Option<PathBuf>, _raw: String) {
     let Some(root) = root else {
-        return vec!["No project selected".into()];
+        error!("No project selected");
+        return;
     };
 
     match ProjectContext::load(&root) {
         Ok(ctx) => match doctor::run(&ctx) {
             Ok(o) => {
-                let mut lines = o.to_lines();
-                if lines.is_empty() {
-                    lines.push("Doctor check complete — no issues found".into());
+                if !o.has_errors() && !o.has_warnings() {
+                    info!("Doctor check complete — no issues found");
                 }
-                lines
             }
-            Err(e) => vec![format!("Doctor failed: {e}")],
+            Err(e) => error!("Doctor failed: {e}"),
         },
-        Err(e) => vec![format!("{e}")],
+        Err(e) => error!("{e}"),
     }
 }
 
-async fn exec_deploy(root: Option<PathBuf>, raw: &str) -> Vec<String> {
+async fn exec_deploy(root: Option<PathBuf>, raw: String) {
     let Some(root) = root else {
-        return vec!["No project selected".into()];
+        error!("No project selected");
+        return;
     };
 
     let dry_run = raw.split_whitespace().any(|w| w == "--dry-run");
 
     match ProjectContext::load(&root) {
         Ok(ctx) => match deploy::deploy(&ctx, dry_run).await {
-            Ok(msg) => vec![msg],
-            Err(e) => vec![format!("Deploy failed: {e}")],
+            Ok(msg) => info!("{msg}"),
+            Err(e) => error!("Deploy failed: {e}"),
         },
-        Err(e) => vec![format!("{e}")],
+        Err(e) => error!("{e}"),
     }
 }
 
-async fn exec_rollback(root: Option<PathBuf>, raw: &str) -> Vec<String> {
+async fn exec_rollback(root: Option<PathBuf>, raw: String) {
     let Some(root) = root else {
-        return vec!["No project selected".into()];
+        error!("No project selected");
+        return;
     };
 
     let id = raw.split_whitespace().next().unwrap_or("");
     if id.is_empty() {
-        return vec!["No deployment ID provided".into()];
+        error!("No deployment ID provided");
+        return;
     }
 
     match ProjectContext::load(&root) {
         Ok(ctx) => match deploy::rollback(&ctx, id).await {
-            Ok(msg) => vec![msg],
-            Err(e) => vec![format!("Rollback failed: {e}")],
+            Ok(msg) => info!("{msg}"),
+            Err(e) => error!("Rollback failed: {e}"),
         },
-        Err(e) => vec![format!("{e}")],
+        Err(e) => error!("{e}"),
     }
 }
 
-async fn exec_clean(root: Option<PathBuf>) -> Vec<String> {
+async fn exec_clean(root: Option<PathBuf>, _raw: String) {
     let Some(root) = root else {
-        return vec!["No project selected".into()];
+        error!("No project selected");
+        return;
     };
 
     match ProjectContext::load(&root) {
         Ok(ctx) => match ctx.clean() {
-            Ok(()) => vec!["Cleaned build artifacts".into()],
-            Err(e) => vec![format!("Clean failed: {e}")],
+            Ok(()) => info!("Cleaned build artifacts"),
+            Err(e) => error!("Clean failed: {e}"),
         },
-        Err(e) => vec![format!("{e}")],
+        Err(e) => error!("{e}"),
     }
 }

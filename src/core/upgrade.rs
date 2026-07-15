@@ -1,6 +1,6 @@
 use tracing::{info, warn};
 
-use crate::core::{CiteError, Style, styled};
+use crate::core::CiteError;
 
 const REPO: &str = "VinayIN/cite-cli";
 const BIN_NAME: &str = "cite-cli";
@@ -36,16 +36,12 @@ pub async fn upgrade() -> Result<String, CiteError> {
     let current = env!("CARGO_PKG_VERSION");
 
     if current == latest {
-        return Ok(styled(
-            format!("Already up to date (v{current})"),
-            Style::Success,
-        ));
+        return Ok(format!("Already up to date (v{current})"));
     }
 
     if !is_newer(latest, current) {
-        return Ok(styled(
-            format!("Local version v{current} is newer than remote v{latest}"),
-            Style::Info,
+        return Ok(format!(
+            "Local version v{current} is newer than remote v{latest}"
         ));
     }
 
@@ -83,7 +79,7 @@ pub async fn upgrade() -> Result<String, CiteError> {
 
     std::fs::rename(&tmp_path, &current_exe)?;
 
-    Ok(styled(format!("Updated to v{latest}"), Style::Success))
+    Ok(format!("Updated to v{latest}"))
 }
 
 fn target_triple() -> String {

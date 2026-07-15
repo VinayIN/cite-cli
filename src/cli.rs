@@ -1,9 +1,10 @@
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
-use crate::core::report::{CiteError, Style, styled};
+use crate::core::report::CiteError;
 use crate::core::{compiler, deploy, doctor, project, scaffold, uninstall, upgrade};
+use colored::Colorize;
 
 #[derive(Parser)]
 #[command(
@@ -119,7 +120,7 @@ fn load_projects(
 }
 
 fn print_project_header(name: &str) {
-    eprintln!("{}", styled(format!("── {name} ──"), Style::Header));
+    info!("── {name} ──");
 }
 
 impl CliCommand {
@@ -127,26 +128,13 @@ impl CliCommand {
         match self {
             CliCommand::Init { name, path } => {
                 let root = match path {
-                    Some(p) => PathBuf::from(p),
+                    Some(p) => PathBuf::from(p).join(&name),
                     None => resolve_path(None).join(&name),
                 };
-                let report = scaffold::init_project(&name, &root)?;
-
-                for d in &report.directories_created {
-                    info!("Created directory: {d}");
-                }
-                for f in &report.files_created {
-                    info!("Created file: {f}");
-                }
-                for f in &report.files_skipped {
-                    info!("Skipped: {f}");
-                }
-                eprintln!(
+                scaffold::init_project(&name, &root)?;
+                println!(
                     "{}",
-                    styled(
-                        format!("Project '{name}' ready at {}", root.display()),
-                        Style::Success,
-                    )
+                    format!("Project '{name}' ready at {}", root.display()).green()
                 );
                 Ok(())
             }
@@ -162,16 +150,13 @@ impl CliCommand {
                         print_project_header(&ctx.manifest.project.name);
                     }
                     let outcome = doctor::lint_all(ctx);
-                    outcome.print();
+                    outcome.emit();
                     if outcome.has_warnings() {
                         overall_has_warnings = true;
                     }
                 }
                 if !overall_has_warnings {
-                    eprintln!(
-                        "{}",
-                        styled("Lint complete — no issues found", Style::Success)
-                    );
+                    println!("{}", format!("Lint complete — no issues found").green());
                 }
                 Ok(())
             }
@@ -187,9 +172,9 @@ impl CliCommand {
                         print_project_header(&ctx.manifest.project.name);
                     }
                     match compiler::compile(ctx, force).await {
-                        Ok(report) => report.print(),
+                        Ok(_) => {}
                         Err(e) => {
-                            warn!("Build failed: {e}");
+                            error!("Build failed: {e}");
                             has_errors = true;
                         }
                     }
@@ -199,6 +184,7 @@ impl CliCommand {
                         "Build failed in one or more projects".to_string(),
                     ))
                 } else {
+                    println!("{}", format!("Build complete").green());
                     Ok(())
                 }
             }
@@ -226,6 +212,7 @@ impl CliCommand {
                         "Deploy failed in one or more projects".to_string(),
                     ))
                 } else {
+                    println!("{}", format!("Deploy complete").green());
                     Ok(())
                 }
             }
@@ -238,38 +225,11 @@ impl CliCommand {
                     if multi {
                         print_project_header(&ctx.manifest.project.name);
                     } else {
-                        eprintln!("{}", styled("Project Status", Style::Header));
+                        info!("Project Status");
                     }
-                    eprintln!("  Name: {}", ctx.manifest.project.name);
-                    eprintln!("  Project Root: {}", ctx.root.display());
-                    eprintln!("  Artist ID: {}", ctx.manifest.project.artist_id);
-                    if let Some(backend) = &ctx.manifest.backend
-                        && let Some(url) = &backend.staging_url
-                    {
-                        eprintln!("  Publishing to: {url}");
-                    }
-                    eprintln!("  Podcasts: {}", ctx.metadata.podcasts.len());
-                    let build_path = ctx.build_dir().join("content.json");
-                    if build_path.exists() {
-                        eprintln!("  Build: {}", styled("exists", Style::Success));
-                        if let Ok(meta) = std::fs::metadata(&build_path)
-                            && let Ok(modified) = meta.modified()
-                            && let Ok(elapsed) = modified.elapsed()
-                        {
-                            let secs = elapsed.as_secs();
-                            let since = if secs < 60 {
-                                "just now".to_string()
-                            } else if secs < 3600 {
-                                format!("{}m ago", secs / 60)
-                            } else {
-                                format!("{}h ago", secs / 3600)
-                            };
-                            eprintln!("  Built: {since}");
-                        }
-                    } else {
-                        eprintln!("  Build: not built");
-                    }
+                    project::print_status(ctx);
                 }
+                println!("{}", format!("Status complete").green());
                 Ok(())
             }
             CliCommand::Doctor { path } => {
@@ -288,7 +248,6 @@ impl CliCommand {
                         print_project_header(&ctx.manifest.project.name);
                     }
                     let outcome = doctor::run(ctx)?;
-                    outcome.print();
                     if outcome.has_errors() {
                         overall_has_errors = true;
                     }
@@ -301,9 +260,9 @@ impl CliCommand {
                         "Doctor found validation errors".to_string(),
                     ));
                 } else if !overall_has_warnings {
-                    eprintln!(
+                    println!(
                         "{}",
-                        styled("Doctor check complete — no issues found", Style::Success)
+                        format!("Doctor check complete — no issues found").green()
                     );
                 }
                 Ok(())
@@ -318,7 +277,7 @@ impl CliCommand {
                         print_project_header(&ctx.manifest.project.name);
                     }
                     ctx.clean()?;
-                    eprintln!("{}", styled("Cleaned build artifacts", Style::Success));
+                    println!("{}", format!("Cleaned build artifacts").green());
                 }
                 Ok(())
             }
@@ -326,7 +285,7 @@ impl CliCommand {
                 let root = resolve_path(path);
                 let ctx = load_project(&root)?;
                 let msg = deploy::rollback(&ctx, &id).await?;
-                eprintln!("{msg}");
+                info!("{msg}");
                 Ok(())
             }
             CliCommand::Login {
@@ -336,11 +295,14 @@ impl CliCommand {
             } => {
                 let root = resolve_path(path);
                 let ctx = load_project(&root)?;
-                deploy::login(&ctx, email, password).await
+                deploy::login(&ctx, email, password).await?;
+                println!("{}", format!("Login complete").green());
+                Ok(())
             }
             CliCommand::Upgrade => {
                 let msg = upgrade::upgrade().await?;
-                eprintln!("{msg}");
+                info!("{msg}");
+                println!("{}", format!("Upgrade complete").green());
                 Ok(())
             }
             CliCommand::Uninstall { force } => uninstall::uninstall(force),

@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use crate::core::cache::{self, BuildCache};
 use crate::core::metadata::{Podcast, TimelineEntry};
 use crate::core::project::ProjectContext;
-use crate::core::{CiteError, Style, styled};
+use crate::core::CiteError;
 use serde::Serialize;
-use tracing::instrument;
+use tracing::{info, instrument};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,28 +47,16 @@ pub enum CompileOutcome {
 }
 
 impl CompileOutcome {
-    pub fn print(&self) {
-        for line in self.to_lines() {
-            eprintln!("{line}");
-        }
-    }
-
-    pub fn to_lines(&self) -> Vec<String> {
+    pub fn emit(&self) {
         match self {
             CompileOutcome::UpToDate => {
-                vec![styled(
-                    "Nothing to rebuild — all files up to date",
-                    Style::Success,
-                )]
+                info!("Nothing to rebuild — all files up to date");
             }
-            CompileOutcome::Complete { podcasts, artifact } => vec![
-                styled(format!("Built {} podcast items", podcasts), Style::Info),
-                styled(
-                    format!("Build artifact at {}", artifact.display()),
-                    Style::Info,
-                ),
-                styled("Build completed successfully", Style::Success),
-            ],
+            CompileOutcome::Complete { podcasts, artifact } => {
+                info!("Built {} podcast items", podcasts);
+                info!("Build artifact at {}", artifact.display());
+                info!("Build completed successfully");
+            }
         }
     }
 }
@@ -85,7 +73,9 @@ pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileOutcome
         if cache.compiler_version == ctx.manifest.build.compiler_version {
             let changed_hashes = cache.changed_since(&current_hashes);
             if changed_hashes.is_empty() {
-                return Ok(CompileOutcome::UpToDate);
+                let result = CompileOutcome::UpToDate;
+                result.emit();
+                return Ok(result);
             }
         }
     }
@@ -100,10 +90,12 @@ pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileOutcome
     let cache = BuildCache::new(ctx.manifest.build.compiler_version, current_hashes);
     cache.save(&cache_path).await?;
 
-    Ok(CompileOutcome::Complete {
+    let result = CompileOutcome::Complete {
         podcasts: ctx.metadata.podcasts.len(),
         artifact: build_dir.join("content.json"),
-    })
+    };
+    result.emit();
+    Ok(result)
 }
 
 async fn build_bundle(ctx: &ProjectContext) -> Result<ContentBundle, CiteError> {
