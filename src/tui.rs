@@ -24,7 +24,6 @@ impl Drop for TerminalGuard {
     }
 }
 
-// Main entry point for the TUI
 pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>) -> Result<(), CiteError> {
     let mut terminal = ratatui::init();
     let _guard = TerminalGuard;
@@ -36,11 +35,26 @@ pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>) -> Result<(), 
     let cwd = std::env::current_dir().unwrap_or_default();
     let mut app = AppState::new(&cwd);
 
-    let (key_tx, mut key_rx) = mpsc::unbounded_channel::<KeyEvent>();
-    tokio::task::spawn_blocking(move || {
-        while let Ok(Event::Key(key)) = event::read() {
-            if key_tx.send(key).is_err() {
-                break;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
+    let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+
+    let event_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => break,
+                result = tokio::task::spawn_blocking(|| {
+                    if event::poll(std::time::Duration::from_millis(100)).unwrap_or(false) {
+                        event::read().ok()
+                    } else {
+                        None
+                    }
+                }) => {
+                    if let Some(Some(event)) = result.ok() {
+                        if event_tx.send(event).is_err() {
+                            break;
+                        }
+                    }
+                }
             }
         }
     });
@@ -58,30 +72,42 @@ pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>) -> Result<(), 
                 app.refresh_projects();
             }
             Some(line) = log_rx.recv() => {
+                let was_at_bottom = app.scroll >= app.log.len().saturating_sub(1);
                 app.log.push(line);
-                app.scroll = app.log.len().saturating_sub(1);
+                if was_at_bottom || app.log.len() <= 1 {
+                    app.scroll = app.log.len().saturating_sub(1);
+                }
             }
-            Some(key) = key_rx.recv() => {
-                if key.kind == KeyEventKind::Press {
-                    if key.code == KeyCode::Esc && app.editor_pick.is_none() {
-                        break;
-                    }
-                    app.handle_key(key);
+            Some(event) = event_rx.recv() => {
+                if let Event::Key(key) = event {
+                    if key.kind == KeyEventKind::Press {
+                        if key.code == KeyCode::Esc && app.editor_pick.is_none() {
+                            break;
+                        }
+                        app.handle_key(key);
 
-                    if let Some(path) = app.pending_edit.take() {
-                        edit_file(&mut terminal, &mut app, &path)
-                            .map_err(|e| CiteError::Config(format!("{e}")))?;
+                        if let Some(path) = app.pending_edit.take() {
+                            edit_file(&mut terminal, &mut app, &path)
+                                .await
+                                .map_err(|e| CiteError::Config(format!("{e}")))?;
+                        }
                     }
                 }
             }
         }
     }
 
+    if let Some(task) = app.task.take() {
+        task.abort();
+    }
+
+    let _ = shutdown_tx.send(()).await;
+    let _ = event_task.await;
+
     Ok(())
 }
 
-// Suspend the TUI, open `path` in the user's editor, then restore the TUI.
-fn edit_file(
+async fn edit_file(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut AppState,
     path: &Path,
@@ -91,36 +117,44 @@ fn edit_file(
         .unwrap_or_else(|_| "vi".to_string());
 
     info!(">> Spelunking {} in {editor}", path.display());
-
-    let before = file_digest(path);
+    let before = file_digest(path).await;
 
     ratatui::restore();
-    let status = std::process::Command::new(&editor).arg(path).status();
+
+    let editor_clone = editor.clone();
+    let path_clone = path.to_path_buf();
+
+    let status = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(&editor_clone)
+            .arg(&path_clone)
+            .status()
+    })
+    .await
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))??;
+
     *terminal = ratatui::init();
     terminal.clear()?;
 
     match status {
-        Ok(s) if s.success() => {
-            if file_digest(path) != before {
+        s if s.success() => {
+            if file_digest(path).await != before {
                 info!("Edited {}", path.display());
             } else {
                 info!("No changes to {}", path.display());
             }
         }
-        Ok(s) => warn!("Editor exited with {s}"),
-        Err(e) => error!("Failed to launch '{editor}': {e}"),
+        s => warn!("Editor exited with {s}"),
     }
+
     app.refresh_projects();
     Ok(())
 }
 
-fn file_digest(path: &Path) -> Option<[u8; 32]> {
+async fn file_digest(path: &Path) -> Option<[u8; 32]> {
     use sha2::Digest;
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = tokio::fs::read(path).await.ok()?;
     Some(sha2::Sha256::digest(&bytes).into())
 }
-
-// Data Types
 
 pub struct Cmd {
     pub label: &'static str,
@@ -299,55 +333,45 @@ impl AppState {
         let has_args = !CMDS[self.sel_cmd].args_hint.is_empty();
 
         match key.code {
-            KeyCode::Tab => {
-                if self.busy {
-                    return;
-                }
-                let order = self.focus_order();
-                let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);
-                self.focus = order[(i + 1) % order.len()];
-            }
-            KeyCode::BackTab => {
+            KeyCode::Tab | KeyCode::BackTab => {
                 if self.busy {
                     return;
                 }
                 let order = self.focus_order();
                 let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);
                 let n = order.len();
-                self.focus = order[(i + n - 1) % n];
+                self.focus = if key.code == KeyCode::Tab {
+                    order[(i + 1) % n]
+                } else {
+                    order[(i + n - 1) % n]
+                };
             }
             KeyCode::Up => match self.focus {
-                Focus::Projects => {
-                    if !self.busy {
-                        self.sel_project = self.sel_project.saturating_sub(1);
-                    }
+                Focus::Projects if !self.busy => {
+                    self.sel_project = self.sel_project.saturating_sub(1)
                 }
-                Focus::Commands | Focus::Details => {
-                    if !self.busy {
-                        self.sel_cmd = self.sel_cmd.saturating_sub(1);
-                        if !has_args {
-                            self.focus = Focus::Commands;
-                        }
+                Focus::Commands | Focus::Details if !self.busy => {
+                    self.sel_cmd = self.sel_cmd.saturating_sub(1);
+                    if !has_args {
+                        self.focus = Focus::Commands;
                     }
                 }
                 Focus::Logs => self.scroll = self.scroll.saturating_sub(1),
+                _ => {}
             },
             KeyCode::Down => match self.focus {
-                Focus::Projects => {
-                    if !self.busy {
-                        self.sel_project =
-                            (self.sel_project + 1).min(self.roots.len().saturating_sub(1));
-                    }
+                Focus::Projects if !self.busy => {
+                    self.sel_project =
+                        (self.sel_project + 1).min(self.roots.len().saturating_sub(1));
                 }
-                Focus::Commands | Focus::Details => {
-                    if !self.busy {
-                        self.sel_cmd = (self.sel_cmd + 1).min(CMDS.len().saturating_sub(1));
-                        if !has_args {
-                            self.focus = Focus::Commands;
-                        }
+                Focus::Commands | Focus::Details if !self.busy => {
+                    self.sel_cmd = (self.sel_cmd + 1).min(CMDS.len().saturating_sub(1));
+                    if !has_args {
+                        self.focus = Focus::Commands;
                     }
                 }
                 Focus::Logs => self.scroll = self.scroll.saturating_add(1),
+                _ => {}
             },
             KeyCode::Enter => {
                 if !self.busy {
@@ -364,25 +388,23 @@ impl AppState {
                 }
             }
             KeyCode::Char('r') if !matches!(self.focus, Focus::Details) => {
-                self.refresh_projects();
-                self.log.clear();
-                self.scroll = 0;
-                warn!(">> Refreshed");
+                if !self.busy {
+                    self.refresh_projects();
+                    self.log.clear();
+                    self.scroll = 0;
+                    warn!(">> Refreshed");
+                }
             }
             KeyCode::Char(ch) => {
                 if matches!(self.focus, Focus::Details) && !self.busy {
                     self.arg_input.push(ch);
                 }
             }
-            KeyCode::PageUp => {
-                if matches!(self.focus, Focus::Logs) {
-                    self.scroll = self.scroll.saturating_sub(10);
-                }
+            KeyCode::PageUp if matches!(self.focus, Focus::Logs) => {
+                self.scroll = self.scroll.saturating_sub(10);
             }
-            KeyCode::PageDown => {
-                if matches!(self.focus, Focus::Logs) {
-                    self.scroll = self.scroll.saturating_add(10);
-                }
+            KeyCode::PageDown if matches!(self.focus, Focus::Logs) => {
+                self.scroll = self.scroll.saturating_add(10);
             }
             _ => {}
         }
@@ -464,8 +486,6 @@ impl AppState {
     }
 }
 
-// Rendering
-
 fn block(title: &str, focused: bool) -> Block<'_> {
     let border_style = if focused {
         Style::new().fg(Color::Cyan).bold()
@@ -486,6 +506,25 @@ fn select_style(is_focused: bool, is_selected: bool) -> Style {
     } else {
         Style::new()
     }
+}
+
+fn format_list_item(
+    name: &str,
+    inner_width: usize,
+    is_focused: bool,
+    is_selected: bool,
+) -> ListItem<'static> {
+    let prefix = if is_selected { "▸ " } else { "  " };
+    let text = format!("{prefix}{name}");
+
+    let display_text = if text.len() > inner_width {
+        text.chars().take(inner_width).collect::<String>()
+    } else {
+        format!("{text:<width$}", width = inner_width)
+    };
+
+    let style = select_style(is_focused, is_selected);
+    ListItem::new(Line::from(Span::styled(display_text, style))).style(style)
 }
 
 fn render(frame: &mut Frame, app: &mut AppState) {
@@ -527,17 +566,8 @@ fn render_editor_pick(frame: &mut Frame, area: Rect, pick: &EditorPick) {
         .iter()
         .enumerate()
         .map(|(i, f)| {
-            let is_selected = i == pick.sel;
-            let prefix = if is_selected { "▸ " } else { "  " };
             let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-            let text = format!("{prefix}{name}");
-            let padded = format!("{text:<width$}", width = inner_width);
-            let style = if is_selected {
-                Style::new().bold().bg(Color::Cyan).fg(Color::Black)
-            } else {
-                Style::new()
-            };
-            ListItem::new(Line::from(Span::styled(padded, style))).style(style)
+            format_list_item(name, inner_width, true, i == pick.sel)
         })
         .collect();
 
@@ -552,6 +582,10 @@ fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
             " RUNNING ",
             Style::new().bg(Color::Yellow).fg(Color::Black),
         ));
+        left_spans.push(Span::styled(
+            format!(" Executing: {} ", CMDS[app.sel_cmd].label),
+            Style::new().fg(Color::Yellow),
+        ));
     } else {
         left_spans.push(Span::styled(
             " READY ",
@@ -559,19 +593,10 @@ fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
         ));
     }
 
-    if app.busy {
-        let cmd = &CMDS[app.sel_cmd];
-        left_spans.push(Span::styled(
-            format!(" Executing: {} ", cmd.label),
-            Style::new().fg(Color::Yellow),
-        ));
-    }
-
     let version = Span::styled(
         format!("v{}", env!("CARGO_PKG_VERSION")),
         Style::new().fg(Color::DarkGray),
     );
-
     let [left_area, right_area] =
         Layout::horizontal([Constraint::Percentage(85), Constraint::Percentage(15)]).areas(area);
 
@@ -584,9 +609,9 @@ fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
 
 fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
     let [left, right] =
-        Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)]).areas(area);
+        Layout::horizontal([Constraint::Percentage(10), Constraint::Percentage(90)]).areas(area);
     let [top, bot] =
-        Layout::vertical([Constraint::Percentage(25), Constraint::Percentage(75)]).areas(right);
+        Layout::vertical([Constraint::Percentage(30), Constraint::Percentage(70)]).areas(right);
     let [cmd_list, cmd_doc] =
         Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).areas(top);
 
@@ -599,39 +624,34 @@ fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
 fn render_projects(frame: &mut Frame, area: Rect, app: &AppState) {
     let is_focused = matches!(app.focus, Focus::Projects);
     let inner_width = area.width.saturating_sub(2) as usize;
+
     let items: Vec<ListItem> = app
         .roots
         .iter()
         .enumerate()
         .map(|(i, root)| {
-            let is_selected = i == app.sel_project;
-            let prefix = if is_selected { "▸ " } else { "  " };
             let name = root.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-            let text = format!("{prefix}{name}");
-            let padded = format!("{text:<width$}", width = inner_width);
-            let style = select_style(is_focused, is_selected);
-            ListItem::new(Line::from(Span::styled(padded, style))).style(style)
+            format_list_item(name, inner_width, is_focused, i == app.sel_project)
         })
         .collect();
 
-    let title = format!("Projects ({})", app.roots.len());
-    frame.render_widget(List::new(items).block(block(&title, is_focused)), area);
+    frame.render_widget(
+        List::new(items).block(block(
+            &format!("Projects ({})", app.roots.len()),
+            is_focused,
+        )),
+        area,
+    );
 }
 
 fn render_cmds(frame: &mut Frame, area: Rect, app: &AppState) {
     let is_focused = matches!(app.focus, Focus::Commands);
     let inner_width = area.width.saturating_sub(2) as usize;
+
     let items: Vec<ListItem> = CMDS
         .iter()
         .enumerate()
-        .map(|(i, cmd)| {
-            let is_selected = i == app.sel_cmd;
-            let prefix = if is_selected { "▸ " } else { "  " };
-            let text = format!("{prefix}{}", cmd.label);
-            let padded = format!("{text:<width$}", width = inner_width);
-            let style = select_style(is_focused, is_selected);
-            ListItem::new(Line::from(Span::styled(padded, style))).style(style)
-        })
+        .map(|(i, cmd)| format_list_item(cmd.label, inner_width, is_focused, i == app.sel_cmd))
         .collect();
 
     frame.render_widget(List::new(items).block(block("Commands", is_focused)), area);
@@ -652,26 +672,27 @@ fn render_cmd_doc(frame: &mut Frame, area: Rect, app: &AppState) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::raw("Arguments:")));
         lines.push(Line::from(Span::raw(format!("  {}", cmd.args_hint))));
-
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::raw("Input: "),
-            Span::styled(
-                if app.arg_input.is_empty() {
-                    "Awaiting input..."
-                } else {
-                    app.arg_input.as_str()
-                },
-                if is_focused {
-                    Style::new()
-                        .bold()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::UNDERLINED)
-                } else {
-                    Style::new().fg(Color::Gray)
-                },
-            ),
-        ]));
+
+        let input_text = if app.arg_input.is_empty() {
+            "Awaiting input..."
+        } else {
+            app.arg_input.as_str()
+        };
+        let mut spans = vec![Span::raw("Input: ")];
+
+        if is_focused {
+            spans.push(Span::styled(
+                input_text,
+                Style::new()
+                    .bold()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED),
+            ));
+        } else {
+            spans.push(Span::styled(input_text, Style::new().fg(Color::Gray)));
+        }
+        lines.push(Line::from(spans));
     }
 
     frame.render_widget(
@@ -687,11 +708,11 @@ fn render_log(frame: &mut Frame, area: Rect, app: &AppState) {
     let visible_lines = area.height.saturating_sub(2) as usize;
     let max_scroll = app.log.len().saturating_sub(visible_lines);
     let scroll_y = app.scroll.min(max_scroll);
-
     let end = (scroll_y + visible_lines).min(app.log.len());
+
     let lines: Vec<Line> = app.log[scroll_y..end]
         .iter()
-        .map(|l| color_log_line(l.as_str()))
+        .map(|l| color_log_line(l))
         .collect();
 
     frame.render_widget(
@@ -714,22 +735,28 @@ fn color_log_line(l: &str) -> Line<'static> {
 
     for (tag, color) in TAGS {
         if let Some(idx) = remaining.find(tag) {
-            spans.push(Span::raw(remaining[..idx].to_string()));
+            if idx > 0 {
+                spans.push(Span::raw(remaining[..idx].to_string()));
+            }
             spans.push(Span::styled(*tag, Style::new().fg(*color).bold()));
             remaining = &remaining[idx + tag.len()..];
+            break;
         }
     }
+
+    if spans.is_empty() {
+        return Line::from(l.to_string());
+    }
+
     spans.push(Span::raw(remaining.to_string()));
     Line::from(spans)
 }
 
 fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
-    let mut left_spans = vec![];
-
-    left_spans.push(Span::styled(
+    let mut left_spans = vec![Span::styled(
         format!("Panel: {} ", app.focus.label()),
         Style::new().bold().bg(Color::Cyan).fg(Color::Black),
-    ));
+    )];
 
     if let Some(proj_name) = app
         .selected_root()
@@ -742,7 +769,6 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
     }
 
     let right_text = " [tab/shift+tab]:Cycle  [↑/↓]:Nav  [enter]:Exec  [r]:Refresh  [pgUp/Dn]:Scroll  [esc]:Quit ";
-
     let [left_area, right_area] =
         Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
 
@@ -751,7 +777,6 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
             .style(Style::new().bg(Color::DarkGray).fg(Color::White)),
         left_area,
     );
-
     frame.render_widget(
         Paragraph::new(Line::from(right_text))
             .style(Style::new().bg(Color::DarkGray).fg(Color::Gray))
@@ -760,13 +785,11 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
     );
 }
 
-// Command Executors
-
 async fn exec_init(root: Option<PathBuf>, raw: String) {
     let parent = root
         .as_deref()
         .and_then(|r| r.parent())
-        .unwrap_or_else(|| std::path::Path::new("."));
+        .unwrap_or_else(|| Path::new("."));
     let name = raw.split_whitespace().next().unwrap_or("new-project");
     let target = parent.join(name);
 
