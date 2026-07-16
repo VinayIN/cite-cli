@@ -293,6 +293,7 @@ pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
         warn!("{msg}");
         outcome.push_warning(msg);
     }
+
     if ctx.manifest.build.incremental {
         info!("Incremental builds enabled");
     }

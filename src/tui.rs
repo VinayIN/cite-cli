@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
@@ -37,6 +36,15 @@ pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>) -> Result<(), 
     let cwd = std::env::current_dir().unwrap_or_default();
     let mut app = AppState::new(&cwd);
 
+    let (key_tx, mut key_rx) = mpsc::unbounded_channel::<KeyEvent>();
+    tokio::task::spawn_blocking(move || {
+        while let Ok(Event::Key(key)) = event::read() {
+            if key_tx.send(key).is_err() {
+                break;
+            }
+        }
+    });
+
     loop {
         terminal
             .draw(|f| render(f, &mut app))
@@ -49,33 +57,20 @@ pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>) -> Result<(), 
                 app.task = None;
                 app.refresh_projects();
             }
-            _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                if app.busy && app.task.as_ref().map_or(false, |h| h.is_finished()) {
-                    app.busy = false;
-                    app.task = None;
-                }
+            Some(line) = log_rx.recv() => {
+                app.log.push(line);
+                app.scroll = app.log.len().saturating_sub(1);
+            }
+            Some(key) = key_rx.recv() => {
+                if key.kind == KeyEventKind::Press {
+                    if key.code == KeyCode::Esc && app.editor_pick.is_none() {
+                        break;
+                    }
+                    app.handle_key(key);
 
-                while let Ok(line) = log_rx.try_recv() {
-                    app.log.push(line);
-                    app.scroll = app.log.len().saturating_sub(1);
-                }
-
-                if event::poll(Duration::from_millis(10))
-                    .map_err(|e| CiteError::Config(format!("{e}")))?
-                {
-                    match event::read().map_err(|e| CiteError::Config(format!("{e}")))? {
-                        Event::Key(key) if key.kind == KeyEventKind::Press => {
-                            if key.code == KeyCode::Esc && app.editor_pick.is_none() {
-                                break;
-                            }
-                            app.handle_key(key);
-
-                            if let Some(path) = app.pending_edit.take() {
-                                edit_file(&mut terminal, &mut app, &path)
-                                    .map_err(|e| CiteError::Config(format!("{e}")))?;
-                            }
-                        }
-                        _ => {}
+                    if let Some(path) = app.pending_edit.take() {
+                        edit_file(&mut terminal, &mut app, &path)
+                            .map_err(|e| CiteError::Config(format!("{e}")))?;
                     }
                 }
             }
@@ -301,54 +296,70 @@ impl AppState {
             return;
         }
 
-        if self.busy {
-            return;
-        }
-
         let has_args = !CMDS[self.sel_cmd].args_hint.is_empty();
 
         match key.code {
             KeyCode::Tab => {
+                if self.busy {
+                    return;
+                }
                 let order = self.focus_order();
                 let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);
                 self.focus = order[(i + 1) % order.len()];
             }
             KeyCode::BackTab => {
+                if self.busy {
+                    return;
+                }
                 let order = self.focus_order();
                 let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);
                 let n = order.len();
                 self.focus = order[(i + n - 1) % n];
             }
             KeyCode::Up => match self.focus {
-                Focus::Projects => self.sel_project = self.sel_project.saturating_sub(1),
+                Focus::Projects => {
+                    if !self.busy {
+                        self.sel_project = self.sel_project.saturating_sub(1);
+                    }
+                }
                 Focus::Commands | Focus::Details => {
-                    self.sel_cmd = self.sel_cmd.saturating_sub(1);
-                    if !has_args {
-                        self.focus = Focus::Commands;
+                    if !self.busy {
+                        self.sel_cmd = self.sel_cmd.saturating_sub(1);
+                        if !has_args {
+                            self.focus = Focus::Commands;
+                        }
                     }
                 }
                 Focus::Logs => self.scroll = self.scroll.saturating_sub(1),
             },
             KeyCode::Down => match self.focus {
                 Focus::Projects => {
-                    self.sel_project =
-                        (self.sel_project + 1).min(self.roots.len().saturating_sub(1));
+                    if !self.busy {
+                        self.sel_project =
+                            (self.sel_project + 1).min(self.roots.len().saturating_sub(1));
+                    }
                 }
                 Focus::Commands | Focus::Details => {
-                    self.sel_cmd = (self.sel_cmd + 1).min(CMDS.len().saturating_sub(1));
-                    if !has_args {
-                        self.focus = Focus::Commands;
+                    if !self.busy {
+                        self.sel_cmd = (self.sel_cmd + 1).min(CMDS.len().saturating_sub(1));
+                        if !has_args {
+                            self.focus = Focus::Commands;
+                        }
                     }
                 }
                 Focus::Logs => self.scroll = self.scroll.saturating_add(1),
             },
-            KeyCode::Enter => match self.focus {
-                Focus::Projects => self.open_edit_picker(),
-                Focus::Commands | Focus::Details => self.start_cmd(),
-                _ => {}
-            },
+            KeyCode::Enter => {
+                if !self.busy {
+                    match self.focus {
+                        Focus::Projects => self.open_edit_picker(),
+                        Focus::Commands | Focus::Details => self.start_cmd(),
+                        _ => {}
+                    }
+                }
+            }
             KeyCode::Backspace => {
-                if matches!(self.focus, Focus::Details) {
+                if matches!(self.focus, Focus::Details) && !self.busy {
                     self.arg_input.pop();
                 }
             }
@@ -359,7 +370,7 @@ impl AppState {
                 warn!(">> Refreshed");
             }
             KeyCode::Char(ch) => {
-                if matches!(self.focus, Focus::Details) {
+                if matches!(self.focus, Focus::Details) && !self.busy {
                     self.arg_input.push(ch);
                 }
             }
@@ -467,6 +478,16 @@ fn block(title: &str, focused: bool) -> Block<'_> {
         .border_style(border_style)
 }
 
+fn select_style(is_focused: bool, is_selected: bool) -> Style {
+    if is_focused && is_selected {
+        Style::new().bold().bg(Color::Cyan).fg(Color::Black)
+    } else if is_selected {
+        Style::new().bold().fg(Color::Cyan)
+    } else {
+        Style::new()
+    }
+}
+
 fn render(frame: &mut Frame, app: &mut AppState) {
     let [header, body, status] = Layout::vertical([
         Constraint::Length(1),
@@ -475,7 +496,7 @@ fn render(frame: &mut Frame, app: &mut AppState) {
     ])
     .areas(frame.area());
 
-    render_header(frame, header);
+    render_header(frame, header, app);
     render_body(frame, body, app);
     render_statusbar(frame, status, app);
 
@@ -524,19 +545,50 @@ fn render_editor_pick(frame: &mut Frame, area: Rect, pick: &EditorPick) {
     frame.render_widget(List::new(items).block(block("Edit", true)), popup);
 }
 
-fn render_header(frame: &mut Frame, area: Rect) {
-    let t = Line::from(vec![Span::styled(
+fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
+    let mut left_spans = vec![];
+    if app.busy {
+        left_spans.push(Span::styled(
+            " RUNNING ",
+            Style::new().bg(Color::Yellow).fg(Color::Black),
+        ));
+    } else {
+        left_spans.push(Span::styled(
+            " READY ",
+            Style::new().bg(Color::Green).fg(Color::Black),
+        ));
+    }
+
+    if app.busy {
+        let cmd = &CMDS[app.sel_cmd];
+        left_spans.push(Span::styled(
+            format!(" Executing: {} ", cmd.label),
+            Style::new().fg(Color::Yellow),
+        ));
+    }
+
+    let version = Span::styled(
         format!("v{}", env!("CARGO_PKG_VERSION")),
         Style::new().fg(Color::DarkGray),
-    )]);
-    frame.render_widget(Paragraph::new(t).alignment(Alignment::Right), area);
+    );
+
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Percentage(85), Constraint::Percentage(15)]).areas(area);
+
+    frame.render_widget(Paragraph::new(Line::from(left_spans)), left_area);
+    frame.render_widget(
+        Paragraph::new(Line::from(version)).alignment(Alignment::Right),
+        right_area,
+    );
 }
 
 fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
-    let [left, right] = Layout::horizontal([Constraint::Max(25), Constraint::Fill(1)]).areas(area);
-    let [top, bot] = Layout::vertical([Constraint::Max(12), Constraint::Fill(1)]).areas(right);
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)]).areas(area);
+    let [top, bot] =
+        Layout::vertical([Constraint::Percentage(25), Constraint::Percentage(75)]).areas(right);
     let [cmd_list, cmd_doc] =
-        Layout::horizontal([Constraint::Max(25), Constraint::Fill(1)]).areas(top);
+        Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).areas(top);
 
     render_projects(frame, left, app);
     render_cmds(frame, cmd_list, app);
@@ -557,13 +609,7 @@ fn render_projects(frame: &mut Frame, area: Rect, app: &AppState) {
             let name = root.file_name().and_then(|n| n.to_str()).unwrap_or("?");
             let text = format!("{prefix}{name}");
             let padded = format!("{text:<width$}", width = inner_width);
-            let style = if is_focused && is_selected {
-                Style::new().bold().bg(Color::Cyan).fg(Color::Black)
-            } else if is_selected {
-                Style::new().bold().fg(Color::Cyan)
-            } else {
-                Style::new()
-            };
+            let style = select_style(is_focused, is_selected);
             ListItem::new(Line::from(Span::styled(padded, style))).style(style)
         })
         .collect();
@@ -583,13 +629,7 @@ fn render_cmds(frame: &mut Frame, area: Rect, app: &AppState) {
             let prefix = if is_selected { "▸ " } else { "  " };
             let text = format!("{prefix}{}", cmd.label);
             let padded = format!("{text:<width$}", width = inner_width);
-            let style = if is_focused && is_selected {
-                Style::new().bold().bg(Color::Cyan).fg(Color::Black)
-            } else if is_selected {
-                Style::new().bold().fg(Color::Cyan)
-            } else {
-                Style::new()
-            };
+            let style = select_style(is_focused, is_selected);
             ListItem::new(Line::from(Span::styled(padded, style))).style(style)
         })
         .collect();
@@ -643,7 +683,8 @@ fn render_cmd_doc(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 fn render_log(frame: &mut Frame, area: Rect, app: &AppState) {
-    let visible_lines = area.height.saturating_sub(3) as usize;
+    let is_focused = matches!(app.focus, Focus::Logs);
+    let visible_lines = area.height.saturating_sub(2) as usize;
     let max_scroll = app.log.len().saturating_sub(visible_lines);
     let scroll_y = app.scroll.min(max_scroll);
 
@@ -653,11 +694,12 @@ fn render_log(frame: &mut Frame, area: Rect, app: &AppState) {
         .map(|l| color_log_line(l.as_str()))
         .collect();
 
-    let para = Paragraph::new(Text::from(lines))
-        .block(block("Logs", matches!(app.focus, Focus::Logs)))
-        .wrap(Wrap { trim: false });
-
-    frame.render_widget(para, area);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(block("Logs", is_focused))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn color_log_line(l: &str) -> Line<'static> {
@@ -684,18 +726,6 @@ fn color_log_line(l: &str) -> Line<'static> {
 fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
     let mut left_spans = vec![];
 
-    if app.busy {
-        left_spans.push(Span::styled(
-            " RUNNING ",
-            Style::new().bg(Color::Yellow).fg(Color::Black),
-        ));
-    } else {
-        left_spans.push(Span::styled(
-            " READY ",
-            Style::new().bg(Color::Green).fg(Color::Black),
-        ));
-    }
-
     left_spans.push(Span::styled(
         format!("Panel: {} ", app.focus.label()),
         Style::new().bold().bg(Color::Cyan).fg(Color::Black),
@@ -711,22 +741,10 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
         ));
     }
 
-    if app.busy {
-        let cmd = &CMDS[app.sel_cmd];
-        left_spans.push(Span::styled(
-            format!(" Executing: {} ", cmd.label),
-            Style::new().fg(Color::Yellow),
-        ));
-    }
-
     let right_text = " [tab/shift+tab]:Cycle  [↑/↓]:Nav  [enter]:Exec  [r]:Refresh  [pgUp/Dn]:Scroll  [esc]:Quit ";
 
-    let safe_right_len = right_text.len() as u16;
-    let [left_area, right_area] = Layout::horizontal([
-        Constraint::Fill(1),
-        Constraint::Length(safe_right_len.min(area.width.saturating_sub(1))),
-    ])
-    .areas(area);
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
 
     frame.render_widget(
         Paragraph::new(Line::from(left_spans))
