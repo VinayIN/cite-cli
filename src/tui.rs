@@ -7,11 +7,11 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::core::CiteError;
 use crate::core::project::{self, ProjectContext};
@@ -65,10 +65,15 @@ pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>) -> Result<(), 
                 {
                     match event::read().map_err(|e| CiteError::Config(format!("{e}")))? {
                         Event::Key(key) if key.kind == KeyEventKind::Press => {
-                            if key.code == KeyCode::Esc {
+                            if key.code == KeyCode::Esc && app.editor_pick.is_none() {
                                 break;
                             }
                             app.handle_key(key);
+
+                            if let Some(path) = app.pending_edit.take() {
+                                edit_file(&mut terminal, &mut app, &path)
+                                    .map_err(|e| CiteError::Config(format!("{e}")))?;
+                            }
                         }
                         _ => {}
                     }
@@ -78,6 +83,46 @@ pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>) -> Result<(), 
     }
 
     Ok(())
+}
+
+// Suspend the TUI, open `path` in the user's editor, then restore the TUI.
+fn edit_file(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut AppState,
+    path: &Path,
+) -> std::io::Result<()> {
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string());
+
+    info!(">> Spelunking {} in {editor}", path.display());
+
+    let before = file_digest(path);
+
+    ratatui::restore();
+    let status = std::process::Command::new(&editor).arg(path).status();
+    *terminal = ratatui::init();
+    terminal.clear()?;
+
+    match status {
+        Ok(s) if s.success() => {
+            if file_digest(path) != before {
+                info!("Edited {}", path.display());
+            } else {
+                info!("No changes to {}", path.display());
+            }
+        }
+        Ok(s) => warn!("Editor exited with {s}"),
+        Err(e) => error!("Failed to launch '{editor}': {e}"),
+    }
+    app.refresh_projects();
+    Ok(())
+}
+
+fn file_digest(path: &Path) -> Option<[u8; 32]> {
+    use sha2::Digest;
+    let bytes = std::fs::read(path).ok()?;
+    Some(sha2::Sha256::digest(&bytes).into())
 }
 
 // Data Types
@@ -180,6 +225,11 @@ impl Focus {
     }
 }
 
+struct EditorPick {
+    files: Vec<PathBuf>,
+    sel: usize,
+}
+
 pub struct AppState {
     cwd: PathBuf,
     pub roots: Vec<PathBuf>,
@@ -190,6 +240,8 @@ pub struct AppState {
     pub scroll: usize,
     pub busy: bool,
     pub arg_input: String,
+    editor_pick: Option<EditorPick>,
+    pending_edit: Option<PathBuf>,
     rx: mpsc::Receiver<()>,
     tx: mpsc::Sender<()>,
     task: Option<JoinHandle<()>>,
@@ -210,6 +262,8 @@ impl AppState {
             scroll: 0,
             busy: false,
             arg_input: String::new(),
+            editor_pick: None,
+            pending_edit: None,
             rx,
             tx,
             task: None,
@@ -242,6 +296,11 @@ impl AppState {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        if self.editor_pick.is_some() {
+            self.handle_pick_key(key);
+            return;
+        }
+
         if self.busy {
             return;
         }
@@ -284,7 +343,7 @@ impl AppState {
                 Focus::Logs => self.scroll = self.scroll.saturating_add(1),
             },
             KeyCode::Enter => match self.focus {
-                Focus::Projects => self.focus = Focus::Commands,
+                Focus::Projects => self.open_edit_picker(),
                 Focus::Commands | Focus::Details => self.start_cmd(),
                 _ => {}
             },
@@ -296,8 +355,8 @@ impl AppState {
             KeyCode::Char('r') if !matches!(self.focus, Focus::Details) => {
                 self.refresh_projects();
                 self.log.clear();
-                self.log.push("Refreshed".into());
                 self.scroll = 0;
+                warn!(">> Refreshed");
             }
             KeyCode::Char(ch) => {
                 if matches!(self.focus, Focus::Details) {
@@ -318,13 +377,42 @@ impl AppState {
         }
     }
 
+    fn handle_pick_key(&mut self, key: KeyEvent) {
+        let Some(pick) = self.editor_pick.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Up => pick.sel = pick.sel.saturating_sub(1),
+            KeyCode::Down => pick.sel = (pick.sel + 1).min(pick.files.len().saturating_sub(1)),
+            KeyCode::Enter => {
+                self.pending_edit = pick.files.get(pick.sel).cloned();
+                self.editor_pick = None;
+            }
+            KeyCode::Esc | KeyCode::Char('q') => self.editor_pick = None,
+            _ => {}
+        }
+    }
+
+    fn open_edit_picker(&mut self) {
+        let Some(root) = self.selected_root() else {
+            error!("No project selected");
+            return;
+        };
+
+        let metadata_file = ProjectContext::load(&root)
+            .map(|c| c.manifest.project.metadata_file)
+            .unwrap_or_else(|_| "metadata.yml".into());
+
+        let files = vec![root.join("cite.toml"), root.join(metadata_file)];
+        self.editor_pick = Some(EditorPick { files, sel: 0 });
+    }
+
     fn start_cmd(&mut self) {
         let root = self.selected_root();
         let cmd = &CMDS[self.sel_cmd];
 
         if cmd.needs_project && root.is_none() {
-            self.log
-                .push("!! No projects found — select or init a project first".into());
+            error!("No projects found — select or init a project first");
             return;
         }
 
@@ -335,14 +423,14 @@ impl AppState {
             format!(" ({raw_args})")
         };
 
-        self.log.push(format!(
+        info!(
             ">> {}{} {}",
             cmd.label,
             arg_display,
             root.as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default()
-        ));
+        );
 
         self.busy = true;
         let id = cmd.id;
@@ -390,6 +478,50 @@ fn render(frame: &mut Frame, app: &mut AppState) {
     render_header(frame, header);
     render_body(frame, body, app);
     render_statusbar(frame, status, app);
+
+    if let Some(pick) = &app.editor_pick {
+        render_editor_pick(frame, frame.area(), pick);
+    }
+}
+
+fn render_editor_pick(frame: &mut Frame, area: Rect, pick: &EditorPick) {
+    let width = 54u16.min(area.width.saturating_sub(2));
+    let height = (pick.files.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let [_, mid, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(height),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let [_, popup, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(width),
+        Constraint::Fill(1),
+    ])
+    .areas(mid);
+
+    let inner_width = popup.width.saturating_sub(2) as usize;
+    let items: Vec<ListItem> = pick
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let is_selected = i == pick.sel;
+            let prefix = if is_selected { "▸ " } else { "  " };
+            let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            let text = format!("{prefix}{name}");
+            let padded = format!("{text:<width$}", width = inner_width);
+            let style = if is_selected {
+                Style::new().bold().bg(Color::Cyan).fg(Color::Black)
+            } else {
+                Style::new()
+            };
+            ListItem::new(Line::from(Span::styled(padded, style))).style(style)
+        })
+        .collect();
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(List::new(items).block(block("Edit", true)), popup);
 }
 
 fn render_header(frame: &mut Frame, area: Rect) {
@@ -587,7 +719,7 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
         ));
     }
 
-    let right_text = " [Tab/Shift+Tab]:Cycle  [↑/↓]:Nav  [Enter]:Exec  [r]:Refresh  [PgUp/Dn]:Scroll  [Esc]:Quit ";
+    let right_text = " [tab/shift+tab]:Cycle  [↑/↓]:Nav  [enter]:Exec  [r]:Refresh  [pgUp/Dn]:Scroll  [esc]:Quit ";
 
     let safe_right_len = right_text.len() as u16;
     let [left_area, right_area] = Layout::horizontal([
