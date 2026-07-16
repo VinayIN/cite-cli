@@ -1,5 +1,5 @@
 use std::path::Path;
-use tracing::{error, info, instrument, warn};
+use tracing::{error, info, warn};
 
 use crate::core::CiteError;
 use crate::core::project::ProjectContext;
@@ -91,7 +91,6 @@ fn collect_findings(errors: Vec<String>, warnings: Vec<String>) -> DoctorOutcome
     }
 }
 
-#[instrument(skip(ctx), fields(project = %ctx.manifest.project.name))]
 pub fn validate_all(ctx: &ProjectContext) -> DoctorOutcome {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
@@ -219,7 +218,6 @@ fn validate_asset_formats(ctx: &ProjectContext, warnings: &mut Vec<String>) {
     }
 }
 
-#[instrument(skip(ctx), fields(project = %ctx.manifest.project.name))]
 pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
     let mut warnings = Vec::new();
 

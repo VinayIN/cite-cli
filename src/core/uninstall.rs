@@ -1,9 +1,10 @@
 use std::io::Write;
 
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 
 use crate::core::CiteError;
 
+#[instrument]
 pub fn uninstall(force: bool) -> Result<(), CiteError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| CiteError::Config(format!("Cannot determine executable path: {e}")))?;

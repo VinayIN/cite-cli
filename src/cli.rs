@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
-use std::path::{Path, PathBuf};
-use tracing::{debug, error, info, warn};
+use std::path::PathBuf;
+use tracing::{error, info, instrument, warn};
 
 use crate::core::report::CiteError;
 use crate::core::{compiler, deploy, doctor, project, scaffold, uninstall, upgrade};
@@ -86,50 +86,36 @@ pub enum CliCommand {
     },
 }
 
-fn resolve_path(path: Option<String>) -> PathBuf {
-    match path {
-        Some(p) => PathBuf::from(p),
-        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-    }
-}
-
-fn load_project(root: &Path) -> Result<project::ProjectContext, CiteError> {
-    debug!(path = %root.display(), "Loading project context");
-    project::ProjectContext::load(root)
-}
-
-fn discover_projects(path: Option<String>) -> Vec<PathBuf> {
-    let root = resolve_path(path);
-    project::discover_projects(&root)
-}
-
+#[instrument]
 fn load_projects(
     path: Option<String>,
     empty_msg: &str,
 ) -> Result<Option<Vec<project::ProjectContext>>, CiteError> {
-    let roots = discover_projects(path);
+    let root = match path {
+        Some(p) => PathBuf::from(p),
+        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+    let mut roots = project::discover_projects(&root);
+    roots.sort();
     if roots.is_empty() {
         warn!("{empty_msg}");
         return Ok(None);
     }
     let mut projects = Vec::with_capacity(roots.len());
     for root in &roots {
-        projects.push(load_project(root)?);
+        projects.push(project::ProjectContext::load(root)?);
     }
     Ok(Some(projects))
-}
-
-fn print_project_header(name: &str) {
-    info!("── {name} ──");
 }
 
 impl CliCommand {
     pub async fn execute(self) -> Result<(), CiteError> {
         match self {
             CliCommand::Init { name, path } => {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                 let root = match path {
                     Some(p) => PathBuf::from(p).join(&name),
-                    None => resolve_path(None).join(&name),
+                    None => cwd.join(&name),
                 };
                 scaffold::init_project(&name, &root)?;
                 println!(
@@ -147,7 +133,7 @@ impl CliCommand {
                 let mut overall_has_warnings = false;
                 for ctx in &projects {
                     if multi {
-                        print_project_header(&ctx.manifest.project.name);
+                        println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
                     let outcome = doctor::lint_all(ctx);
                     outcome.emit();
@@ -169,7 +155,7 @@ impl CliCommand {
                 let mut has_errors = false;
                 for ctx in &projects {
                     if multi {
-                        print_project_header(&ctx.manifest.project.name);
+                        println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
                     match compiler::compile(ctx, force).await {
                         Ok(_) => {}
@@ -197,7 +183,7 @@ impl CliCommand {
                 let mut has_errors = false;
                 for ctx in &projects {
                     if multi {
-                        print_project_header(&ctx.manifest.project.name);
+                        println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
                     match deploy::deploy(ctx, dry_run).await {
                         Ok(msg) => eprintln!("{msg}"),
@@ -223,7 +209,7 @@ impl CliCommand {
                 let multi = projects.len() > 1;
                 for ctx in &projects {
                     if multi {
-                        print_project_header(&ctx.manifest.project.name);
+                        println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     } else {
                         info!("Project Status");
                     }
@@ -233,7 +219,10 @@ impl CliCommand {
                 Ok(())
             }
             CliCommand::Doctor { path } => {
-                let root = resolve_path(path.clone());
+                let root = match path.clone() {
+                    Some(p) => PathBuf::from(p),
+                    None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                };
                 let Some(projects) = load_projects(path, "")? else {
                     info!("Running diagnostics");
                     doctor::check_file(&root, "cite.toml", "run 'cite-cli init'");
@@ -245,7 +234,7 @@ impl CliCommand {
                 let mut overall_has_warnings = false;
                 for ctx in &projects {
                     if multi {
-                        print_project_header(&ctx.manifest.project.name);
+                        println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
                     let outcome = doctor::run(ctx)?;
                     if outcome.has_errors() {
@@ -274,7 +263,7 @@ impl CliCommand {
                 let multi = projects.len() > 1;
                 for ctx in &projects {
                     if multi {
-                        print_project_header(&ctx.manifest.project.name);
+                        println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
                     ctx.clean()?;
                     println!("{}", format!("Cleaned build artifacts").green());
@@ -282,8 +271,11 @@ impl CliCommand {
                 Ok(())
             }
             CliCommand::Rollback { id, path } => {
-                let root = resolve_path(path);
-                let ctx = load_project(&root)?;
+                let root = match path {
+                    Some(p) => PathBuf::from(p),
+                    None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                };
+                let ctx = project::ProjectContext::load(&root)?;
                 let msg = deploy::rollback(&ctx, &id).await?;
                 info!("{msg}");
                 Ok(())
@@ -293,8 +285,11 @@ impl CliCommand {
                 password,
                 path,
             } => {
-                let root = resolve_path(path);
-                let ctx = load_project(&root)?;
+                let root = match path {
+                    Some(p) => PathBuf::from(p),
+                    None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                };
+                let ctx = project::ProjectContext::load(&root)?;
                 deploy::login(&ctx, email, password).await?;
                 println!("{}", format!("Login complete").green());
                 Ok(())

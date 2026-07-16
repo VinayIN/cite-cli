@@ -5,7 +5,7 @@ use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::RequestBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{info, instrument, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::core::CiteError;
@@ -98,7 +98,6 @@ async fn ensure_success(
     )))
 }
 
-#[instrument(skip(ctx), fields(project = %ctx.manifest.project.name, dry_run))]
 pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteError> {
     let Some(backend) = &ctx.manifest.backend else {
         return Err(CiteError::Config(
@@ -374,7 +373,6 @@ async fn delete_storage_object(dctx: &DeployContext, storage_path: &str) -> Resu
     Ok(())
 }
 
-#[instrument(skip(ctx), fields(id = %deployment_id))]
 pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<String, CiteError> {
     let Some(backend) = &ctx.manifest.backend else {
         return Err(CiteError::Config(

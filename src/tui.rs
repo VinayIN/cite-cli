@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
@@ -279,7 +279,8 @@ pub struct AppState {
 impl AppState {
     pub fn new(cwd: &Path) -> Self {
         let (tx, rx) = mpsc::channel(32);
-        let roots = Self::discover(cwd);
+        let mut roots = project::discover_projects(cwd);
+        roots.sort();
 
         Self {
             cwd: cwd.to_path_buf(),
@@ -299,15 +300,15 @@ impl AppState {
         }
     }
 
-    fn discover(cwd: &Path) -> Vec<PathBuf> {
-        let mut r = project::discover_projects(cwd);
-        r.sort();
-        r
-    }
-
     fn refresh_projects(&mut self) {
-        self.cwd = std::env::current_dir().unwrap_or_else(|_| self.cwd.clone());
-        self.roots = Self::discover(&self.cwd);
+        let mut r = project::discover_projects(&self.cwd);
+        for p in std::mem::take(&mut self.roots) {
+            if !r.contains(&p) && !p.starts_with(&self.cwd) {
+                r.push(p);
+            }
+        }
+        r.sort();
+        self.roots = r;
         self.sel_project = self.sel_project.min(self.roots.len().saturating_sub(1));
     }
 
@@ -465,13 +466,23 @@ impl AppState {
                 .unwrap_or_default()
         );
 
+        if cmd.id == CommandId::Init {
+            let name = raw_args.split_whitespace().next().unwrap_or("new-project");
+            let path = resolve_relative(&self.cwd, name);
+            if !self.roots.contains(&path) {
+                self.roots.push(path);
+                self.roots.sort();
+            }
+        }
+
         self.busy = true;
         let id = cmd.id;
         let tx = self.tx.clone();
 
+        let cwd = self.cwd.clone();
         let handle = tokio::spawn(async move {
             match id {
-                CommandId::Init => exec_init(root, raw_args).await,
+                CommandId::Init => exec_init(cwd, raw_args).await,
                 CommandId::Build => exec_build(root, raw_args).await,
                 CommandId::Lint => exec_lint(root, raw_args).await,
                 CommandId::Status => exec_status(root, raw_args).await,
@@ -583,7 +594,11 @@ fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
             Style::new().bg(Color::Yellow).fg(Color::Black),
         ));
         left_spans.push(Span::styled(
-            format!(" Executing: {} ", CMDS[app.sel_cmd].label),
+            format!(
+                " Executing: {} on {}",
+                CMDS[app.sel_cmd].label,
+                app.cwd.display()
+            ),
             Style::new().fg(Color::Yellow),
         ));
     } else {
@@ -728,6 +743,7 @@ fn color_log_line(l: &str) -> Line<'static> {
         ("ERROR", Color::Red),
         ("WARN", Color::Yellow),
         ("INFO", Color::Green),
+        ("DEBUG", Color::Blue),
     ];
 
     let mut spans = Vec::new();
@@ -785,13 +801,24 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
     );
 }
 
-async fn exec_init(root: Option<PathBuf>, raw: String) {
-    let parent = root
-        .as_deref()
-        .and_then(|r| r.parent())
-        .unwrap_or_else(|| Path::new("."));
+fn resolve_relative(base: &Path, relative: &str) -> PathBuf {
+    let base = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+    let mut result = base;
+    for comp in Path::new(relative).components() {
+        match comp {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::Normal(c) => result.push(c),
+            _ => {}
+        }
+    }
+    result
+}
+
+async fn exec_init(cwd: PathBuf, raw: String) {
     let name = raw.split_whitespace().next().unwrap_or("new-project");
-    let target = parent.join(name);
+    let target = resolve_relative(&cwd, name);
 
     match scaffold::init_project(name, &target) {
         Ok(_) => info!("Project '{name}' created at {}", target.display()),
@@ -804,15 +831,16 @@ async fn exec_build(root: Option<PathBuf>, raw: String) {
         error!("No project selected");
         return;
     };
-    let force = raw.split_whitespace().any(|w| w == "--force");
-
-    match ProjectContext::load(&root) {
-        Ok(ctx) => {
-            if let Err(e) = compiler::compile(&ctx, force).await {
-                error!("Build failed: {e}");
-            }
+    let ctx = match ProjectContext::load(&root) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            error!("{e}");
+            return;
         }
-        Err(e) => error!("{e}"),
+    };
+    let force = raw.split_whitespace().any(|w| w == "--force");
+    if let Err(e) = compiler::compile(&ctx, force).await {
+        error!("Build failed: {e}");
     }
 }
 
@@ -821,10 +849,14 @@ async fn exec_lint(root: Option<PathBuf>, _raw: String) {
         error!("No project selected");
         return;
     };
-    match ProjectContext::load(&root) {
-        Ok(ctx) => doctor::lint_all(&ctx).emit(),
-        Err(e) => error!("{e}"),
-    }
+    let ctx = match ProjectContext::load(&root) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            error!("{e}");
+            return;
+        }
+    };
+    doctor::lint_all(&ctx).emit();
 }
 
 async fn exec_status(root: Option<PathBuf>, _raw: String) {
@@ -832,10 +864,14 @@ async fn exec_status(root: Option<PathBuf>, _raw: String) {
         error!("No project selected");
         return;
     };
-    match ProjectContext::load(&root) {
-        Ok(ctx) => project::print_status(&ctx),
-        Err(e) => error!("{e}"),
-    }
+    let ctx = match ProjectContext::load(&root) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            error!("{e}");
+            return;
+        }
+    };
+    project::print_status(&ctx);
 }
 
 async fn exec_doctor(root: Option<PathBuf>, _raw: String) {
@@ -843,16 +879,20 @@ async fn exec_doctor(root: Option<PathBuf>, _raw: String) {
         error!("No project selected");
         return;
     };
-    match ProjectContext::load(&root) {
-        Ok(ctx) => match doctor::run(&ctx) {
-            Ok(o) => {
-                if !o.has_errors() && !o.has_warnings() {
-                    info!("Doctor check complete — no issues found");
-                }
+    let ctx = match ProjectContext::load(&root) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            error!("{e}");
+            return;
+        }
+    };
+    match doctor::run(&ctx) {
+        Ok(o) => {
+            if !o.has_errors() && !o.has_warnings() {
+                info!("Doctor check complete — no issues found");
             }
-            Err(e) => error!("Doctor failed: {e}"),
-        },
-        Err(e) => error!("{e}"),
+        }
+        Err(e) => error!("Doctor failed: {e}"),
     }
 }
 
@@ -861,47 +901,56 @@ async fn exec_deploy(root: Option<PathBuf>, raw: String) {
         error!("No project selected");
         return;
     };
+    let ctx = match ProjectContext::load(&root) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            error!("{e}");
+            return;
+        }
+    };
     let dry_run = raw.split_whitespace().any(|w| w == "--dry-run");
-
-    match ProjectContext::load(&root) {
-        Ok(ctx) => match deploy::deploy(&ctx, dry_run).await {
-            Ok(msg) => info!("{msg}"),
-            Err(e) => error!("Deploy failed: {e}"),
-        },
-        Err(e) => error!("{e}"),
+    match deploy::deploy(&ctx, dry_run).await {
+        Ok(msg) => info!("{msg}"),
+        Err(e) => error!("Deploy failed: {e}"),
     }
 }
 
 async fn exec_rollback(root: Option<PathBuf>, raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
     let id = raw.split_whitespace().next().unwrap_or("");
     if id.is_empty() {
         error!("No deployment ID provided");
         return;
     }
-
-    match ProjectContext::load(&root) {
-        Ok(ctx) => match deploy::rollback(&ctx, id).await {
-            Ok(msg) => info!("{msg}"),
-            Err(e) => error!("Rollback failed: {e}"),
-        },
-        Err(e) => error!("{e}"),
+    let Some(root) = root else {
+        error!("No project selected");
+        return;
+    };
+    let ctx = match ProjectContext::load(&root) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            error!("{e}");
+            return;
+        }
+    };
+    match deploy::rollback(&ctx, id).await {
+        Ok(msg) => info!("{msg}"),
+        Err(e) => error!("Rollback failed: {e}"),
     }
 }
-
 async fn exec_clean(root: Option<PathBuf>, _raw: String) {
     let Some(root) = root else {
         error!("No project selected");
         return;
     };
-    match ProjectContext::load(&root) {
-        Ok(ctx) => match ctx.clean() {
-            Ok(()) => info!("Cleaned build artifacts"),
-            Err(e) => error!("Clean failed: {e}"),
-        },
-        Err(e) => error!("{e}"),
+    let ctx = match ProjectContext::load(&root) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            error!("{e}");
+            return;
+        }
+    };
+    match ctx.clean() {
+        Ok(()) => info!("Cleaned build artifacts"),
+        Err(e) => error!("Clean failed: {e}"),
     }
 }

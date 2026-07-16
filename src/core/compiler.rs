@@ -5,7 +5,7 @@ use crate::core::cache::{self, BuildCache};
 use crate::core::metadata::{Podcast, TimelineEntry};
 use crate::core::project::ProjectContext;
 use serde::Serialize;
-use tracing::{info, instrument};
+use tracing::info;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,7 +61,6 @@ impl CompileOutcome {
     }
 }
 
-#[instrument(skip(ctx), fields(project = %ctx.manifest.project.name, force))]
 pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileOutcome, CiteError> {
     let cache_path = ctx.cache_path();
     let content_files = ctx.content_files();

@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use tracing::{info, instrument};
+use tracing::info;
 
 use crate::core::CiteError;
 use crate::core::manifest::Manifest;
@@ -20,7 +20,6 @@ pub struct InitReport {
     pub files_skipped: Vec<String>,
 }
 
-#[instrument(skip(root), fields(project = %name))]
 pub fn init_project(name: &str, root: &Path) -> Result<InitReport, CiteError> {
     let mut report = InitReport {
         directories_created: vec![],

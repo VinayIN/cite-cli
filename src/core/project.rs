@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::core::CiteError;
 use crate::core::manifest::Manifest;
 use crate::core::metadata::Metadata;
-use tracing::{info, instrument};
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct ProjectContext {
@@ -13,7 +13,6 @@ pub struct ProjectContext {
 }
 
 impl ProjectContext {
-    #[instrument(skip(root), fields(path = %root.display()))]
     pub fn load(root: &Path) -> Result<Self, CiteError> {
         let manifest_path = root.join("cite.toml");
         if !manifest_path.exists() {

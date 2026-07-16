@@ -1,11 +1,9 @@
+use crate::core::CiteError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
 use tokio::io::AsyncReadExt;
-use tracing::instrument;
-
-use crate::core::CiteError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildCache {
@@ -60,7 +58,6 @@ impl BuildCache {
     }
 }
 
-#[instrument(skip(files))]
 pub async fn hash_files(files: &[impl AsRef<Path>]) -> Result<HashMap<String, String>, CiteError> {
     let mut hashes = HashMap::new();
     for file in files {
