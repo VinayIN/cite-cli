@@ -9,6 +9,8 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::core::CiteError;
+use crate::core::credentials;
+use crate::core::db::DbManager;
 use crate::core::manifest::BackendConfig;
 use crate::core::project::ProjectContext;
 
@@ -99,11 +101,7 @@ async fn ensure_success(
 }
 
 pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteError> {
-    let Some(backend) = &ctx.manifest.backend else {
-        return Err(CiteError::Config(
-            "No [backend] section in cite.toml (set staging_url)".to_string(),
-        ));
-    };
+    let backend = resolve_backend_config(ctx)?;
 
     let bundle_path = ctx.build_dir().join("content.json");
     if !bundle_path.exists() {
@@ -145,13 +143,28 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteE
         if !artist_id.is_empty() {
             info!("Artist ID: {artist_id}");
         }
+
+        if let Ok(db) = DbManager::open() {
+            let project_id = ctx.id();
+            let _ = db.record_deployment(
+                &project_id,
+                &deployment_id,
+                "",
+                podcasts.len() as i64,
+                timelines.len() as i64,
+                0,
+                true,
+                true,
+            );
+        }
+
         return Ok("Dry run complete".to_string());
     }
 
     let artist_id = Uuid::parse_str(&artist_id).map_err(|_| {
         CiteError::Config("artist_id in content.json must be a valid UUID".to_string())
     })?;
-    let dctx = build_context(ctx, backend, project_name.clone(), artist_id)?;
+    let dctx = build_context(ctx, &backend, project_name.clone(), artist_id)?;
     let storage_path = format!("{artist_id}/{project_name}/{deployment_id}.json");
     let bundle_bytes = serde_json::to_vec_pretty(&bundle)?;
 
@@ -181,9 +194,23 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteE
 
     persist_deployment_record(ctx, &record).await?;
 
-    let podcast_count = record.news_ids.len();
-    let timeline_count = record.timeline_ids.len();
-    let asset_count = record.asset_paths.len();
+    let podcast_count = record.news_ids.len() as i64;
+    let timeline_count = record.timeline_ids.len() as i64;
+    let asset_count = record.asset_paths.len() as i64;
+
+    if let Ok(db) = DbManager::open() {
+        let project_id = ctx.id();
+        let _ = db.record_deployment(
+            &project_id,
+            &deployment_id,
+            &storage_path,
+            podcast_count,
+            timeline_count,
+            asset_count,
+            true,
+            false,
+        );
+    }
 
     Ok(format!(
         "Deployed {podcast_count} podcast(s), {timeline_count} timeline(s), {asset_count} asset(s)"
@@ -373,18 +400,25 @@ async fn delete_storage_object(dctx: &DeployContext, storage_path: &str) -> Resu
     Ok(())
 }
 
+fn resolve_backend_config(ctx: &ProjectContext) -> Result<BackendConfig, CiteError> {
+    if let Some(backend) = &ctx.manifest.backend {
+        return Ok(backend.clone());
+    }
+    let creds = credentials::load_credentials()?;
+    Ok(BackendConfig {
+        staging_url: Some(creds.url),
+        staging_service_key: Some(creds.api_key),
+    })
+}
+
 pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<String, CiteError> {
-    let Some(backend) = &ctx.manifest.backend else {
-        return Err(CiteError::Config(
-            "No [backend] section in cite.toml (set staging_url)".to_string(),
-        ));
-    };
+    let backend = resolve_backend_config(ctx)?;
 
     let (record_path, record) = load_deployment_record(ctx, deployment_id).await?;
     let artist_id = Uuid::parse_str(&ctx.manifest.project.artist_id).map_err(|_| {
         CiteError::Config("artist_id in cite.toml must be a valid UUID".to_string())
     })?;
-    let dctx = build_context(ctx, backend, ctx.manifest.project.name.clone(), artist_id)?;
+    let dctx = build_context(ctx, &backend, ctx.manifest.project.name.clone(), artist_id)?;
 
     warn!("Rolling back deployment: {deployment_id}");
 
@@ -416,7 +450,7 @@ pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<Strin
         warn!("Failed to remove local deployment record: {e}");
     }
 
-    Ok(format!("Rollback complete"))
+    Ok("Rollback complete".to_string())
 }
 
 #[derive(Deserialize)]
@@ -470,21 +504,28 @@ pub async fn login(
     email: Option<String>,
     password: Option<String>,
 ) -> Result<(), CiteError> {
-    let Some(backend) = &ctx.manifest.backend else {
-        return Err(CiteError::Config(
-            "No [backend] section in cite.toml (set staging_url)".to_string(),
-        ));
-    };
-    if backend
-        .staging_service_key
-        .as_deref()
-        .is_none_or(|s| s.is_empty())
-    {
+    let creds = credentials::load_credentials().or_else(|_| {
+        if let Some(b) = &ctx.manifest.backend {
+            Ok(credentials::SupabaseCredentials {
+                url: b.staging_url.clone().unwrap_or_default(),
+                api_key: b.staging_service_key.clone().unwrap_or_default(),
+            })
+        } else {
+            prompt_credentials()
+        }
+    })?;
+
+    if creds.api_key.is_empty() {
         return Err(CiteError::Auth(
-            "backend.staging_service_key (Supabase anon/publishable key) is required for login"
+            "Supabase API key is required for login. Set it in ~/.cite/credentials.toml or CITE_SUPABASE_API_KEY env var."
                 .to_string(),
         ));
     }
+
+    let backend = BackendConfig {
+        staging_url: Some(creds.url.clone()),
+        staging_service_key: Some(creds.api_key.clone()),
+    };
 
     let email = match email {
         Some(e) => e,
@@ -545,10 +586,10 @@ pub async fn login(
     save_session(&session)?;
     info!("Logged in as {}", email);
 
-    match fetch_user_artists(backend, &token.access_token).await {
+    match fetch_user_artists(&backend, &token.access_token).await {
         Ok(artists) if artists.is_empty() => {
             warn!("No artist linked to this account");
-            match prompt_create_artist(backend, &token.access_token).await? {
+            match prompt_create_artist(&backend, &token.access_token).await? {
                 Some((id, name)) => {
                     info!("Created artist '{name}' ({id})");
                 }
@@ -699,7 +740,7 @@ async fn lookup_row_id(
 ) -> Result<Option<i64>, CiteError> {
     let url = format!(
         "{}/rest/v1/{table}?{field}=eq.{}",
-        &dctx.base_url,
+        dctx.base_url,
         encode_url(value)
     );
     let resp = with_auth(dctx.client.get(&url), &dctx.api_key, &dctx.bearer)
@@ -733,7 +774,7 @@ async fn insert_row(
 }
 
 async fn ensure_artist_exists(dctx: &DeployContext, artist_id: Uuid) -> Result<(), CiteError> {
-    let url = format!("{}/rest/v1/artists?id=eq.{}", &dctx.base_url, artist_id);
+    let url = format!("{}/rest/v1/artists?id=eq.{}", dctx.base_url, artist_id);
     let resp = with_auth(dctx.client.get(&url), &dctx.api_key, &dctx.bearer)
         .send()
         .await?;
@@ -1004,6 +1045,15 @@ fn extract_domain_name(source_url: &str) -> Option<String> {
     }
 }
 
+fn prompt_credentials() -> Result<credentials::SupabaseCredentials, CiteError> {
+    println!("No credentials found. Let's set them up.");
+    let url = prompt_line("Supabase URL: ")?;
+    let api_key = prompt_line("Supabase API key (anon/public): ")?;
+    let creds = credentials::SupabaseCredentials { url, api_key };
+    credentials::save_credentials(&creds)?;
+    Ok(creds)
+}
+
 fn summarize_content(content: Option<&str>) -> Option<String> {
     let content = content?.trim();
     if content.is_empty() {
@@ -1138,10 +1188,7 @@ mod tests {
 mod http_tests {
     use super::*;
     use crate::core::compiler;
-    use crate::core::manifest::{
-        AssetsConfig, BackendConfig, BuildConfig, CompilerConfig, Manifest, ProjectConfig,
-        ValidationConfig,
-    };
+    use crate::core::manifest::{BackendConfig, BuildConfig, Manifest, ProjectConfig};
     use crate::core::project::ProjectContext;
     use httpmock::Method::PATCH;
     use httpmock::prelude::*;
@@ -1160,9 +1207,6 @@ mod http_tests {
                 staging_url: Some(staging_url.into()),
                 staging_service_key: Some("key".into()),
             }),
-            compiler: CompilerConfig::default(),
-            assets: AssetsConfig::default(),
-            validation: ValidationConfig::default(),
         };
         std::fs::write(dir.join("cite.toml"), toml::to_string(&manifest).unwrap()).unwrap();
         std::fs::write(

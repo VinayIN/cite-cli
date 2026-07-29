@@ -1,12 +1,7 @@
 [package]
 name = "cite-cli"
-authors = ["Binay Pradhan"]
-version = "0.1.0-alpha.2"
+version = "0.1.0"
 edition = "2024"
-readme = "README.md"
-
-license-file = "LICENSE"
-repository = "https://github.com/VinayIN/cite-cli"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -25,16 +20,11 @@ thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ratatui = { version = "0.30.2", features = ["crossterm"] }
+duckdb = { version = "1.10505.0", features = ["bundled", "json"] }
+symphonia = { version = "0.6", default-features = false, features = ["mp3", "wav", "flac", "vorbis", "isomp4", "aac", "alac", "pcm"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 
 [dev-dependencies]
 tempfile = "3.19"
 httpmock = "0.7"
 regex = "1.13.0"
-
-[[bin]]
-name = "cite-cli"
-path = "src/main.rs"
-
-[profile.dist]
-inherits = "release"
-lto = "thin"

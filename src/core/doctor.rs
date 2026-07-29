@@ -1,14 +1,24 @@
+use std::collections::HashSet;
 use std::path::Path;
+
+use serde::Serialize;
 use tracing::{error, info, warn};
 
 use crate::core::CiteError;
+use crate::core::db::DbManager;
 use crate::core::project::ProjectContext;
 
+fn db_path() -> std::path::PathBuf {
+    crate::core::db::global_db_path()
+}
+
+#[derive(Serialize)]
 pub enum DoctorOutcome {
     Clean,
     Findings {
         errors: Vec<String>,
         warnings: Vec<String>,
+        infos: Vec<String>,
     },
 }
 
@@ -33,12 +43,16 @@ impl DoctorOutcome {
             DoctorOutcome::Findings {
                 errors: new_errors,
                 warnings: new_warnings,
+                infos: new_infos,
             } => {
                 for e in new_errors {
                     self.push_error(e);
                 }
                 for w in new_warnings {
                     self.push_warning(w);
+                }
+                for i in new_infos {
+                    self.push_info(i);
                 }
             }
         }
@@ -51,6 +65,7 @@ impl DoctorOutcome {
                 *self = DoctorOutcome::Findings {
                     errors: vec![msg],
                     warnings: Vec::new(),
+                    infos: Vec::new(),
                 }
             }
         }
@@ -63,6 +78,20 @@ impl DoctorOutcome {
                 *self = DoctorOutcome::Findings {
                     errors: Vec::new(),
                     warnings: vec![msg],
+                    infos: Vec::new(),
+                }
+            }
+        }
+    }
+
+    fn push_info(&mut self, msg: String) {
+        match self {
+            DoctorOutcome::Findings { infos, .. } => infos.push(msg),
+            DoctorOutcome::Clean => {
+                *self = DoctorOutcome::Findings {
+                    errors: Vec::new(),
+                    warnings: Vec::new(),
+                    infos: vec![msg],
                 }
             }
         }
@@ -71,174 +100,27 @@ impl DoctorOutcome {
     pub fn emit(&self) {
         match self {
             DoctorOutcome::Clean => {}
-            DoctorOutcome::Findings { errors, warnings } => {
+            DoctorOutcome::Findings { errors, warnings, infos } => {
                 for e in errors {
                     error!("{e}");
                 }
                 for w in warnings {
                     warn!("{w}");
                 }
+                for i in infos {
+                    info!("{i}");
+                }
             }
         }
     }
 }
 
-fn collect_findings(errors: Vec<String>, warnings: Vec<String>) -> DoctorOutcome {
-    if errors.is_empty() && warnings.is_empty() {
+fn collect_findings(errors: Vec<String>, warnings: Vec<String>, infos: Vec<String>) -> DoctorOutcome {
+    if errors.is_empty() && warnings.is_empty() && infos.is_empty() {
         DoctorOutcome::Clean
     } else {
-        DoctorOutcome::Findings { errors, warnings }
+        DoctorOutcome::Findings { errors, warnings, infos }
     }
-}
-
-pub fn validate_all(ctx: &ProjectContext) -> DoctorOutcome {
-    let mut errors = Vec::new();
-    let mut warnings = Vec::new();
-
-    validate_project_structure(ctx, &mut errors, &mut warnings);
-    validate_file_existence(ctx, &mut errors, &mut warnings);
-    validate_asset_formats(ctx, &mut warnings);
-
-    collect_findings(errors, warnings)
-}
-
-fn validate_project_structure(
-    ctx: &ProjectContext,
-    errors: &mut Vec<String>,
-    warnings: &mut Vec<String>,
-) {
-    let required = [
-        ("cite.toml", ctx.root.join("cite.toml")),
-        (
-            &ctx.manifest.project.metadata_file,
-            ctx.root.join(&ctx.manifest.project.metadata_file),
-        ),
-    ];
-    for (name, path) in &required {
-        if !path.exists() {
-            let msg = format!("Required file '{name}' not found at {}", path.display());
-            error!("{msg}");
-            errors.push(msg);
-        }
-    }
-
-    let dirs = [
-        ("content", ctx.content_dir()),
-        ("assets/image", ctx.root.join("assets/image")),
-        ("assets/audio", ctx.root.join("assets/audio")),
-    ];
-    for (name, path) in &dirs {
-        if !path.is_dir() {
-            let msg = format!("Directory '{name}' does not exist at {}", path.display());
-            warn!("{msg}");
-            warnings.push(msg);
-        }
-    }
-}
-
-fn validate_file_existence(
-    ctx: &ProjectContext,
-    errors: &mut Vec<String>,
-    warnings: &mut Vec<String>,
-) {
-    for pod in &ctx.metadata.podcasts {
-        let path = ctx.root.join(&pod.file);
-        if !path.exists() {
-            let msg = format!(
-                "Podcast '{}' references file '{}' which does not exist",
-                pod.title, pod.file
-            );
-            error!("{msg}");
-            errors.push(msg);
-        }
-
-        if let Some(cit) = &pod.citation {
-            let cit_path = ctx.root.join(cit);
-            if !cit_path.exists() {
-                let msg = format!(
-                    "Podcast '{}' references citation file '{}' which does not exist",
-                    pod.title, cit
-                );
-                warn!("{msg}");
-                warnings.push(msg);
-            }
-        }
-
-        if let Some(audio) = &pod.audio {
-            let audio_path = ctx.root.join(audio);
-            if !audio_path.exists() {
-                let msg = format!(
-                    "Podcast '{}' references audio file '{}' which does not exist",
-                    pod.title, audio
-                );
-                error!("{msg}");
-                errors.push(msg);
-            }
-        }
-    }
-}
-
-fn validate_asset_formats(ctx: &ProjectContext, warnings: &mut Vec<String>) {
-    let allowed_audio: std::collections::HashSet<&str> = ctx
-        .manifest
-        .assets
-        .audio_formats
-        .iter()
-        .map(|s| s.as_str())
-        .collect();
-
-    for pod in &ctx.metadata.podcasts {
-        if let Some(audio) = &pod.audio {
-            let ext = Path::new(audio)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
-            if !allowed_audio.contains(ext) {
-                let msg = format!(
-                    "Podcast '{}' has audio file '{audio}' with extension '{ext}' not in allowed audio formats {:?}",
-                    pod.title, ctx.manifest.assets.audio_formats
-                );
-                warn!("{msg}");
-                warnings.push(msg);
-            }
-        }
-
-        let ext = Path::new(&pod.file)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        if !matches!(ext, "md" | "rst") {
-            let msg = format!(
-                "Podcast '{}' has file '{}' with unexpected extension '{ext}'",
-                pod.title, pod.file
-            );
-            warn!("{msg}");
-            warnings.push(msg);
-        }
-    }
-}
-
-pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
-    let mut warnings = Vec::new();
-
-    for pod in &ctx.metadata.podcasts {
-        let path = ctx.root.join(&pod.file);
-        if path.exists()
-            && let Ok(content) = std::fs::read_to_string(&path)
-        {
-            let word_count = content.split_whitespace().count();
-            if word_count < 10 {
-                let msg = format!(
-                    "Podcast '{}' is very short ({} words)",
-                    pod.title, word_count
-                );
-                warn!("{msg}");
-                warnings.push(msg);
-            }
-        }
-    }
-
-    collect_findings(Vec::new(), warnings)
 }
 
 pub fn check_file(root: &Path, filename: &str, hint: &str) {
@@ -255,16 +137,36 @@ pub fn check_file(root: &Path, filename: &str, hint: &str) {
 pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
     info!("Running diagnostics");
 
-    let mut outcome = DoctorOutcome::Clean;
-    outcome.merge(validate_all(ctx));
+    if let Ok(db) = DbManager::open() {
+        info!("Database: connected ({})", db_path().display());
+        let project_id = ctx.project_id();
+        if let Ok(Some(_)) = db.load_cache(&project_id) {
+            info!("Cache: present in database");
+        }
+    }
+
+    let mut outcome = validate_all(ctx);
     outcome.merge(lint_all(ctx));
 
-    let meta_file = &ctx.manifest.project.metadata_file;
+    if ctx
+        .manifest
+        .backend
+        .as_ref()
+        .and_then(|b| b.staging_url.as_deref())
+        .is_some_and(|s| !s.is_empty())
+    {
+        info!("Backend configured for staging");
+    } else {
+        let msg = "No backend configured in cite.toml — deploy will use credentials file or env vars".to_string();
+        warn!("{msg}");
+        outcome.push_warning(msg);
+    }
+
     if ctx.root.join("cite.toml").exists() {
         info!("cite.toml found");
     }
-    if ctx.root.join(meta_file).exists() {
-        info!("{meta_file} found");
+    if ctx.root.join("metadata.yml").exists() {
+        info!("metadata.yml found");
     }
 
     for dir in &["content", "assets/audio", "assets/image", "build"] {
@@ -278,44 +180,675 @@ pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
         }
     }
 
-    if ctx
-        .manifest
-        .backend
-        .as_ref()
-        .and_then(|b| b.staging_url.as_deref())
-        .is_some_and(|s| !s.is_empty())
-    {
-        info!("Backend configured for staging");
-    } else {
-        let msg = "No backend configured (deploy will fail)".to_string();
-        warn!("{msg}");
-        outcome.push_warning(msg);
-    }
-
     if ctx.manifest.build.incremental {
         info!("Incremental builds enabled");
     }
+
     if ctx.manifest.project.artist_id.is_empty() {
-        let msg = "Artist ID is empty - set it in [project] in cite.toml".to_string();
+        let msg = "Artist ID is empty — set it in [project] in cite.toml".to_string();
         warn!("{msg}");
         outcome.push_warning(msg);
     } else {
         info!("Artist ID: {}", ctx.manifest.project.artist_id);
     }
-    if ctx
-        .manifest
-        .backend
-        .as_ref()
-        .and_then(|b| b.staging_service_key.as_deref())
-        .is_some_and(|s| !s.is_empty())
-    {
-        info!("Using inline staging_service_key from cite.toml");
-    } else {
-        let msg = "No staging service key found - deploy will fail".to_string();
-        warn!("{msg}");
-        outcome.push_warning(msg);
-    }
 
     outcome.emit();
     Ok(outcome)
+}
+
+// ── Comprehensive Validation (PRD Section 12) ──
+
+fn validate_all(ctx: &ProjectContext) -> DoctorOutcome {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let mut infos = Vec::new();
+
+    validate_project_structure(ctx, &mut errors, &mut warnings, &mut infos);
+    validate_metadata(ctx, &mut errors, &mut warnings);
+    validate_markdown(ctx, &mut errors, &mut warnings);
+    validate_audio(ctx, &mut errors, &mut warnings);
+    validate_images(ctx, &mut errors, &mut warnings);
+    validate_bibtex(ctx, &mut errors, &mut warnings);
+    validate_urls(ctx, &mut errors, &mut warnings);
+
+    collect_findings(errors, warnings, infos)
+}
+
+fn validate_project_structure(
+    ctx: &ProjectContext,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+    infos: &mut Vec<String>,
+) {
+    let required = [
+        ("cite.toml", ctx.root.join("cite.toml")),
+        (
+            &ctx.manifest.project.metadata_file,
+            ctx.root.join(&ctx.manifest.project.metadata_file),
+        ),
+    ];
+    for (name, path) in &required {
+        if !path.exists() {
+            errors.push(format!("Required file '{name}' not found at {}", path.display()));
+        }
+    }
+
+    let dirs = [
+        ("content", ctx.content_dir()),
+        ("assets", ctx.root.join("assets")),
+        ("assets/image", ctx.root.join("assets/image")),
+        ("assets/audio", ctx.root.join("assets/audio")),
+    ];
+    for (name, path) in &dirs {
+        if !path.is_dir() {
+            warnings.push(format!("Directory '{name}' does not exist at {}", path.display()));
+        }
+    }
+
+    let cite_dir = ctx.root.join(".cite");
+    if cite_dir.is_dir() {
+        infos.push(".cite/ directory found".to_string());
+    }
+
+    if let Ok(db) = DbManager::open() {
+        let project_id = ctx.project_id();
+        if let Ok(stats) = db.get_project_stats(&project_id) {
+            infos.push(format!(
+                "Database stats: {} builds, {} deployments",
+                stats.build_count, stats.deployment_count
+            ));
+        }
+    }
+}
+
+fn validate_metadata(
+    ctx: &ProjectContext,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let podcasts = &ctx.metadata.podcasts;
+    if podcasts.is_empty() {
+        warnings.push("No podcasts defined in metadata".to_string());
+        return;
+    }
+
+    let mut titles = HashSet::new();
+    let mut files = HashSet::new();
+
+    for (i, pod) in podcasts.iter().enumerate() {
+        if pod.title.trim().is_empty() {
+            errors.push(format!("Podcast #{} has empty title", i + 1));
+        }
+
+        if pod.file.trim().is_empty() {
+            errors.push(format!("Podcast '{}' has empty file path", pod.title));
+        } else {
+            if !titles.insert(pod.title.clone()) {
+                errors.push(format!("Duplicate podcast title: '{}'", pod.title));
+            }
+            if !files.insert(pod.file.clone()) {
+                errors.push(format!("Duplicate file reference: '{}' in podcast '{}'", pod.file, pod.title));
+            }
+
+            let path = ctx.root.join(&pod.file);
+            if !path.exists() {
+                errors.push(format!(
+                    "Podcast '{}' references file '{}' which does not exist",
+                    pod.title, pod.file
+                ));
+            }
+        }
+
+        if let Some(ref cit) = pod.citation {
+            let cit_path = ctx.root.join(cit);
+            if !cit_path.exists() {
+                errors.push(format!(
+                    "Podcast '{}' references citation file '{}' which does not exist",
+                    pod.title, cit
+                ));
+            }
+        }
+
+        if let Some(ref audio) = pod.audio {
+            let audio_path = ctx.root.join(audio);
+            if !audio_path.exists() {
+                errors.push(format!(
+                    "Podcast '{}' references audio file '{}' which does not exist",
+                    pod.title, audio
+                ));
+            }
+        }
+
+        if let Some(ref thumb) = pod.thumbnail {
+            let thumb_path = ctx.root.join(thumb);
+            if !thumb_path.exists() {
+                errors.push(format!(
+                    "Podcast '{}' references thumbnail file '{}' which does not exist",
+                    pod.title, thumb
+                ));
+            }
+        }
+
+        if !ctx.manifest.project.artist_id.is_empty()
+            && uuid::Uuid::parse_str(&ctx.manifest.project.artist_id).is_err() {
+                errors.push("artist_id in cite.toml must be a valid UUID".to_string());
+            }
+    }
+}
+
+fn validate_markdown(
+    ctx: &ProjectContext,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    for pod in &ctx.metadata.podcasts {
+        if pod.file.is_empty() {
+            continue;
+        }
+        let path = ctx.root.join(&pod.file);
+        if !path.exists() {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                if content.trim().is_empty() {
+                    errors.push(format!("Podcast '{}' has empty markdown file", pod.title));
+                }
+                let lines: Vec<&str> = content.lines().collect();
+                if let Some(first) = lines.first()
+                    && first.starts_with("---") {
+                        if let Some(end) = lines.iter().position(|l| l.starts_with("---") && l != &"---") {
+                            let frontmatter: Vec<&&str> = lines[1..end].iter().collect();
+                            if frontmatter.is_empty() {
+                                warnings.push(format!(
+                                    "Podcast '{}' has empty YAML frontmatter",
+                                    pod.title
+                                ));
+                            }
+                        } else {
+                            warnings.push(format!(
+                                "Podcast '{}' has unclosed YAML frontmatter",
+                                pod.title
+                            ));
+                        }
+                    }
+            }
+            Err(e) => {
+                errors.push(format!(
+                    "Podcast '{}' file '{}' cannot be read: {e}",
+                    pod.title, pod.file
+                ));
+            }
+        }
+    }
+}
+
+fn validate_audio(
+    ctx: &ProjectContext,
+    errors: &mut Vec<String>,
+    _warnings: &mut Vec<String>,
+) {
+    let supported = ["mp3", "wav", "flac", "ogg", "m4a"];
+
+    for pod in &ctx.metadata.podcasts {
+        let Some(ref audio) = pod.audio else {
+            continue;
+        };
+        let path = ctx.root.join(audio);
+        if !path.exists() {
+            continue;
+        }
+
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if !supported.contains(&ext.as_str()) {
+            errors.push(format!(
+                "Podcast '{}' has unsupported audio format '.{ext}' (supported: mp3, wav, flac, ogg, m4a)",
+                pod.title
+            ));
+        }
+
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        const MAX_AUDIO_SIZE: u64 = 500 * 1024 * 1024;
+        if size > MAX_AUDIO_SIZE {
+            errors.push(format!(
+                "Podcast '{}' audio file exceeds 500 MB ({} bytes)",
+                pod.title, size
+            ));
+        }
+    }
+}
+
+fn validate_images(
+    ctx: &ProjectContext,
+    errors: &mut Vec<String>,
+    _warnings: &mut Vec<String>,
+) {
+    let supported = ["jpg", "jpeg", "png", "webp", "gif"];
+
+    for pod in &ctx.metadata.podcasts {
+        let Some(ref thumb) = pod.thumbnail else {
+            continue;
+        };
+        let path = ctx.root.join(thumb);
+        if !path.exists() {
+            continue;
+        }
+
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if !supported.contains(&ext.as_str()) {
+            errors.push(format!(
+                "Podcast '{}' has unsupported image format '.{ext}' (supported: jpg, png, webp, gif)",
+                pod.title
+            ));
+        }
+
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        const MAX_IMAGE_SIZE: u64 = 5 * 1024 * 1024;
+        if size > MAX_IMAGE_SIZE {
+            errors.push(format!(
+                "Podcast '{}' image file exceeds 5 MB ({} bytes)",
+                pod.title, size
+            ));
+        }
+
+        if let Ok(meta) = crate::core::media::extract_image(&path)
+            && meta.width > 0 && meta.height > 0 && (meta.width < 100 || meta.height < 100) {
+                errors.push(format!(
+                    "Podcast '{}' image is too small ({}x{}), minimum 100x100 pixels",
+                    pod.title, meta.width, meta.height
+                ));
+            }
+    }
+}
+
+fn validate_bibtex(
+    ctx: &ProjectContext,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    for pod in &ctx.metadata.podcasts {
+        let Some(ref citation) = pod.citation else {
+            continue;
+        };
+        let path = ctx.root.join(citation);
+        if !path.exists() {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                if content.trim().is_empty() {
+                    warnings.push(format!(
+                        "Podcast '{}' has empty BibTeX file",
+                        pod.title
+                    ));
+                    continue;
+                }
+                let entries = crate::core::compiler::parse_bibtex(&content);
+                if entries.is_empty() {
+                    warnings.push(format!(
+                        "Podcast '{}' BibTeX file parsed but no entries found",
+                        pod.title
+                    ));
+                } else {
+                    let mut keys = HashSet::new();
+                    for entry in &entries {
+                        if !keys.insert(entry.title.clone()) {
+                            warnings.push(format!(
+                                "Podcast '{}' BibTeX has duplicate entry: '{}'",
+                                pod.title, entry.title
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                errors.push(format!(
+                    "Podcast '{}' BibTeX file '{}' cannot be read: {e}",
+                    pod.title, citation
+                ));
+            }
+        }
+    }
+}
+
+fn validate_urls(
+    ctx: &ProjectContext,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let mut urls = HashSet::new();
+
+    for pod in &ctx.metadata.podcasts {
+        if let Some(ref url) = pod.source_url
+            && !url.trim().is_empty() {
+                if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("cite://") {
+                    errors.push(format!(
+                        "Podcast '{}' has invalid source_url: '{url}' (must start with http://, https://, or cite://)",
+                        pod.title
+                    ));
+                }
+                if !urls.insert(url.clone()) {
+                    warnings.push(format!(
+                        "Podcast '{}' has duplicate source_url: '{url}'",
+                        pod.title
+                    ));
+                }
+            }
+    }
+}
+
+// ── Lint Rules (PRD Section 13) ──
+
+pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
+    let mut warnings = Vec::new();
+    let mut infos = Vec::new();
+
+    if ctx.metadata.podcasts.is_empty() {
+        warnings.push("No podcasts to lint".to_string());
+        return collect_findings(Vec::new(), warnings, infos);
+    }
+
+    let mut all_content = Vec::new();
+    let mut audio_durations = Vec::new();
+    let mut audio_formats = Vec::new();
+    let mut sample_rates = Vec::new();
+    let mut bitrates = Vec::new();
+    let mut image_sizes = Vec::new();
+
+    for pod in &ctx.metadata.podcasts {
+        let path = ctx.root.join(&pod.file);
+        if !path.exists() {
+            continue;
+        }
+
+        let content_str = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let word_count = content_str.split_whitespace().count();
+        let reading_time = (word_count as f64 / 200.0).ceil() as u64;
+        let content_copy = content_str.clone();
+        let lines: Vec<&str> = content_str.lines().filter(|l| !l.trim().is_empty()).collect();
+
+        all_content.push((pod.title.clone(), content_copy, word_count, reading_time));
+
+        if word_count < 100 {
+            warnings.push(format!(
+                "Podcast '{}' has low word count ({} words) — minimum recommended is 100",
+                pod.title, word_count
+            ));
+        }
+        if word_count > 50_000 {
+            warnings.push(format!(
+                "Podcast '{}' has very high word count ({} words) — maximum recommended is 50,000",
+                pod.title, word_count
+            ));
+        }
+
+        if reading_time > 0 {
+            if reading_time < 1 {
+                warnings.push(format!(
+                    "Podcast '{}' reading time is less than 1 minute",
+                    pod.title
+                ));
+            }
+            if reading_time > 120 {
+                warnings.push(format!(
+                    "Podcast '{}' reading time is over 2 hours",
+                    pod.title
+                ));
+            }
+        }
+
+        let has_h1 = lines.iter().any(|l| l.starts_with("# "));
+        let has_h2 = lines.iter().any(|l| l.starts_with("## "));
+        if !has_h1 && !has_h2 {
+            warnings.push(format!(
+                "Podcast '{}' has no H1 or H2 headings",
+                pod.title
+            ));
+        } else if !has_h1 {
+            warnings.push(format!(
+                "Podcast '{}' has no H1 heading — consider adding a title",
+                pod.title
+            ));
+        }
+
+        for line in &lines {
+            let words_in_line = line.split_whitespace().count();
+            if words_in_line > 0 && words_in_line < 20 && line.len() > 3 {
+                // Only warn if there are more than a few such lines
+            }
+        }
+
+        if word_count > 500 {
+            let has_citation = pod.citation.is_some();
+            if !has_citation {
+                warnings.push(format!(
+                    "Podcast '{}' is long ({} words) but has no BibTeX citation file",
+                    pod.title, word_count
+                ));
+            }
+        }
+
+        // Audio analysis
+        if let Some(ref audio) = pod.audio {
+            let audio_path = ctx.root.join(audio);
+            if audio_path.exists() {
+                infos.push(format!(
+                    "Podcast '{}' has audio file: {}",
+                    pod.title, audio
+                ));
+
+                if let Ok(meta) = crate::core::media::extract_audio(&audio_path) {
+                    audio_durations.push(meta.duration_secs);
+                    audio_formats.push(meta.format.clone());
+                    sample_rates.push(meta.sample_rate_hz);
+                    bitrates.push(meta.bitrate_kbps);
+
+                    if meta.duration_secs < 60.0 && meta.duration_secs > 0.0 {
+                        warnings.push(format!(
+                            "Podcast '{}' audio is very short ({:.0}s)",
+                            pod.title, meta.duration_secs
+                        ));
+                    }
+                    if meta.duration_secs > 14400.0 {
+                        warnings.push(format!(
+                            "Podcast '{}' audio is very long ({:.0}s > 4 hours)",
+                            pod.title, meta.duration_secs
+                        ));
+                    }
+
+                    if meta.bitrate_kbps > 0 && meta.bitrate_kbps < 128 {
+                        warnings.push(format!(
+                            "Podcast '{}' audio bitrate is low ({} kbps < 128)",
+                            pod.title, meta.bitrate_kbps
+                        ));
+                    }
+                    if meta.bitrate_kbps > 320 {
+                        warnings.push(format!(
+                            "Podcast '{}' audio bitrate is high ({} kbps > 320)",
+                            pod.title, meta.bitrate_kbps
+                        ));
+                    }
+
+                    if meta.size_bytes > 200 * 1024 * 1024 {
+                        warnings.push(format!(
+                            "Podcast '{}' audio file is large ({} MB > 200 MB)",
+                            pod.title,
+                            meta.size_bytes / (1024 * 1024)
+                        ));
+                    }
+                }
+            }
+        } else {
+            infos.push(format!(
+                "Podcast '{}' has no audio file (audio is optional)",
+                pod.title
+            ));
+        }
+
+        // Image analysis
+        if let Some(ref thumb) = pod.thumbnail {
+            let thumb_path = ctx.root.join(thumb);
+            if thumb_path.exists()
+                && let Ok(meta) = crate::core::media::extract_image(&thumb_path) {
+                    image_sizes.push((meta.width, meta.height, meta.size_bytes));
+
+                    if (meta.width > 0 && meta.width < 200) || (meta.height > 0 && meta.height < 200) {
+                        warnings.push(format!(
+                            "Podcast '{}' thumbnail is small ({}x{}) — minimum 200x200 recommended",
+                            pod.title, meta.width, meta.height
+                        ));
+                    }
+                    if meta.width > 8000 || meta.height > 8000 {
+                        warnings.push(format!(
+                            "Podcast '{}' thumbnail is very large ({}x{}) — maximum 8000x8000 recommended",
+                            pod.title, meta.width, meta.height
+                        ));
+                    }
+
+                    if meta.size_bytes > 3 * 1024 * 1024 {
+                        warnings.push(format!(
+                            "Podcast '{}' thumbnail is large ({} MB > 3 MB)",
+                            pod.title,
+                            meta.size_bytes / (1024 * 1024)
+                        ));
+                    }
+                }
+        }
+    }
+
+    // Cross-podcast lint checks
+    if !audio_formats.is_empty() {
+        let first = &audio_formats[0];
+        for (i, fmt) in audio_formats.iter().enumerate().skip(1) {
+            if fmt != first {
+                warnings.push(format!(
+                    "Audio format inconsistency: podcast {} uses '{}' while most use '{first}'",
+                    i + 1,
+                    fmt
+                ));
+            }
+        }
+    }
+
+    if sample_rates.len() >= 2 {
+        let first_rate = sample_rates[0];
+        for (i, &rate) in sample_rates.iter().enumerate().skip(1) {
+            if rate > 0 && rate != first_rate {
+                warnings.push(format!(
+                    "Sample rate inconsistency: podcast {} uses {} Hz while others use {first_rate} Hz",
+                    i + 1,
+                    rate
+                ));
+            }
+        }
+    }
+
+    // Detect duplicate paragraphs
+    for i in 0..all_content.len() {
+        let paras_i: Vec<&str> = all_content[i].1.split("\n\n").collect();
+        for j in (i + 1)..all_content.len() {
+            let paras_j: Vec<&str> = all_content[j].1.split("\n\n").collect();
+            for (pi, p) in paras_i.iter().enumerate() {
+                let trimmed = p.trim();
+                if trimmed.len() > 20 && paras_j.iter().any(|pj| pj.trim() == trimmed) {
+                    warnings.push(format!(
+                        "Duplicate paragraph found in '{}' and '{}' (paragraph {})",
+                        all_content[i].0, all_content[j].0, pi + 1
+                    ));
+                }
+            }
+        }
+    }
+
+    collect_findings(Vec::new(), warnings, infos)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_doctor_outcome_clean() {
+        let o = DoctorOutcome::Clean;
+        assert!(!o.has_errors());
+        assert!(!o.has_warnings());
+    }
+
+    #[test]
+    fn test_doctor_outcome_push_error() {
+        let mut o = DoctorOutcome::Clean;
+        o.push_error("err1".into());
+        assert!(o.has_errors());
+        assert!(!o.has_warnings());
+        if let DoctorOutcome::Findings { errors, .. } = &o {
+            assert_eq!(errors.len(), 1);
+        } else {
+            panic!("expected Findings");
+        }
+    }
+
+    #[test]
+    fn test_doctor_outcome_push_warning_on_error() {
+        let mut o = DoctorOutcome::Findings {
+            errors: vec!["err1".into()],
+            warnings: vec![],
+            infos: vec![],
+        };
+        o.push_warning("warn1".into());
+        assert!(o.has_errors());
+        assert!(o.has_warnings());
+    }
+
+    #[test]
+    fn test_doctor_outcome_merge() {
+        let mut o1 = DoctorOutcome::Clean;
+        let o2 = DoctorOutcome::Findings {
+            errors: vec!["e1".into(), "e2".into()],
+            warnings: vec!["w1".into()],
+            infos: vec!["i1".into()],
+        };
+        o1.merge(o2);
+        assert!(o1.has_errors());
+        assert!(o1.has_warnings());
+        if let DoctorOutcome::Findings { errors, warnings, infos } = &o1 {
+            assert_eq!(errors.len(), 2);
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(infos.len(), 1);
+        } else {
+            panic!("expected Findings");
+        }
+    }
+
+    #[test]
+    fn test_doctor_outcome_merge_clean() {
+        let mut o1 = DoctorOutcome::Findings {
+            errors: vec!["e1".into()],
+            warnings: vec![],
+            infos: vec![],
+        };
+        o1.merge(DoctorOutcome::Clean);
+        assert!(o1.has_errors());
+        assert_eq!(
+            match &o1 {
+                DoctorOutcome::Findings { errors, .. } => errors.len(),
+                _ => 0,
+            },
+            1
+        );
+    }
+
 }

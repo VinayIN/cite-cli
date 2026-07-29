@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::path::PathBuf;
 
 use tracing::{info, instrument, warn};
 
@@ -43,7 +44,22 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
         info!("Removed empty directory {}", install_dir.display());
     }
 
+    // Remove DuckDB database and session
     let home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
+    let cite_dir = PathBuf::from(&home).join(".cite");
+    if cite_dir.exists() {
+        let _ = std::fs::remove_file(cite_dir.join("cite.db"));
+        let _ = std::fs::remove_file(cite_dir.join("session.json"));
+        info!("Removed ~/.cite/cite.db and ~/.cite/session.json");
+        if std::fs::read_dir(&cite_dir)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(true)
+        {
+            let _ = std::fs::remove_dir(&cite_dir);
+            info!("Removed empty ~/.cite directory");
+        }
+    }
+
     let shell_files = [
         format!("{home}/.zshrc"),
         format!("{home}/.bashrc"),
@@ -63,7 +79,7 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
         info!("  Edit ~/.zshrc, ~/.bashrc, etc. and remove lines containing:");
         info!("    {install_dir_str}");
         info!("  Then restart your shell or run: source ~/.zshrc");
-    };
+    }
     info!("cite-cli has been uninstalled");
     Ok(())
 }

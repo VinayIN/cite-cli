@@ -6,80 +6,65 @@ use crate::core::report::CiteError;
 use crate::core::{compiler, deploy, doctor, project, scaffold, uninstall, upgrade};
 use colored::Colorize;
 
-#[derive(Parser)]
+fn print_json<T: serde::Serialize>(value: &T) {
+    if let Ok(json) = serde_json::to_string_pretty(value) {
+        println!("{json}");
+    }
+}
+
+#[derive(Clone, Parser)]
 #[command(
     name = "cite-cli",
     version,
-    about = "Manage and enrich your podcast projects from scaffolding through deployment"
+    about = "Create, validate, build, and deploy podcast content to Supabase"
 )]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<CliCommand>,
 
+    #[arg(global = true, long, default_value = ".")]
+    pub path: String,
+
     #[arg(global = true, short, long)]
     pub verbose: bool,
+
+    #[arg(global = true, short, long)]
+    pub quiet: bool,
+
+    #[arg(global = true, long)]
+    pub json: bool,
+
+    #[arg(global = true, long)]
+    pub dry_run: bool,
+
+    #[arg(global = true, long)]
+    pub tui: bool,
 }
 
-#[derive(Subcommand)]
+#[derive(Clone, Subcommand)]
 pub enum CliCommand {
-    /// Create a new project with recommended structure and starter files
     Init {
         name: String,
-        #[arg(short, long)]
-        path: Option<String>,
     },
-    /// Run linting rules (naming, style, word counts)
-    Lint {
-        #[arg(short, long)]
-        path: Option<String>,
-    },
-    /// Execute the compiler protocol and produce a build artifact
+    Lint,
     Build {
-        #[arg(short, long)]
-        path: Option<String>,
         #[arg(long)]
         force: bool,
     },
-    /// Deploy the built project to Supabase staging
-    Deploy {
-        #[arg(short, long)]
-        path: Option<String>,
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Authenticate with Supabase and store a session for user-scoped deploys
+    Deploy,
     Login {
         #[arg(long)]
         email: Option<String>,
         #[arg(long)]
         password: Option<String>,
-        #[arg(short, long)]
-        path: Option<String>,
     },
-    /// Show project health, validation summary, and sync state
-    Status {
-        #[arg(short, long)]
-        path: Option<String>,
-    },
-    /// Diagnose common project issues and configuration problems
-    Doctor {
-        #[arg(short, long)]
-        path: Option<String>,
-    },
-    /// Remove build artifacts, temporary files, and build cache
-    Clean {
-        #[arg(short, long)]
-        path: Option<String>,
-    },
-    /// Rollback a deployment by its unique ID
+    Status,
+    Doctor,
+    Clean,
     Rollback {
         id: String,
-        #[arg(short, long)]
-        path: Option<String>,
     },
-    /// Self-update to the latest GitHub release
     Upgrade,
-    /// Remove cite-cli binary and clean up shell configuration
     Uninstall {
         #[arg(short, long)]
         force: bool,
@@ -88,13 +73,10 @@ pub enum CliCommand {
 
 #[instrument]
 fn load_projects(
-    path: Option<String>,
+    path: &str,
     empty_msg: &str,
 ) -> Result<Option<Vec<project::ProjectContext>>, CiteError> {
-    let root = match path {
-        Some(p) => PathBuf::from(p),
-        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-    };
+    let root = PathBuf::from(path);
     let mut roots = project::discover_projects(&root);
     roots.sort();
     if roots.is_empty() {
@@ -109,44 +91,55 @@ fn load_projects(
 }
 
 impl CliCommand {
-    pub async fn execute(self) -> Result<(), CiteError> {
+    pub async fn execute(self, cli: &Cli) -> Result<(), CiteError> {
+        let path = &cli.path;
         match self {
-            CliCommand::Init { name, path } => {
+            CliCommand::Init { name } => {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                let root = match path {
-                    Some(p) => PathBuf::from(p).join(&name),
-                    None => cwd.join(&name),
+                let root = PathBuf::from(path).join(&name);
+                let root = if root.is_absolute() {
+                    root
+                } else {
+                    cwd.join(&root)
                 };
                 scaffold::init_project(&name, &root)?;
-                println!(
-                    "{}",
-                    format!("Project '{name}' ready at {}", root.display()).green()
-                );
+                if cli.json {
+                    print_json(&serde_json::json!({"status": "ok", "project": name, "root": root.to_string_lossy()}));
+                } else {
+                    println!(
+                        "{}",
+                        format!("Project '{name}' ready at {}", root.display()).green()
+                    );
+                }
                 Ok(())
             }
-            CliCommand::Lint { path } => {
+            CliCommand::Lint => {
                 let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
                 };
                 let multi = projects.len() > 1;
-                let mut overall_has_warnings = false;
+                let mut has_warnings = false;
                 for ctx in &projects {
                     if multi {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
                     let outcome = doctor::lint_all(ctx);
-                    outcome.emit();
+                    if cli.json {
+                        print_json(&outcome);
+                    } else {
+                        outcome.emit();
+                    }
                     if outcome.has_warnings() {
-                        overall_has_warnings = true;
+                        has_warnings = true;
                     }
                 }
-                if !overall_has_warnings {
-                    println!("{}", format!("Lint complete — no issues found").green());
+                if !cli.json && !has_warnings {
+                    println!("{}", "Lint complete — no issues found".green());
                 }
                 Ok(())
             }
-            CliCommand::Build { path, force } => {
+            CliCommand::Build { force } => {
                 let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
@@ -158,7 +151,25 @@ impl CliCommand {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
                     match compiler::compile(ctx, force).await {
-                        Ok(_) => {}
+                        Ok(outcome) => {
+                            if cli.json {
+                                match &outcome {
+                                    compiler::CompileOutcome::UpToDate => {
+                                        print_json(&serde_json::json!({"status": "uptodate"}));
+                                    }
+                                    compiler::CompileOutcome::Complete { stats, artifact } => {
+                                        let mut v = serde_json::to_value(stats).unwrap_or_default();
+                                        if let Some(obj) = v.as_object_mut() {
+                                            obj.insert("status".into(), "complete".into());
+                                            obj.insert("artifact".into(), artifact.to_string_lossy().into());
+                                        }
+                                        print_json(&v);
+                                    }
+                                }
+                            } else {
+                                outcome.emit();
+                            }
+                        }
                         Err(e) => {
                             error!("Build failed: {e}");
                             has_errors = true;
@@ -166,15 +177,15 @@ impl CliCommand {
                     }
                 }
                 if has_errors {
-                    Err(CiteError::Config(
+                    return Err(CiteError::Config(
                         "Build failed in one or more projects".to_string(),
-                    ))
-                } else {
-                    println!("{}", format!("Build complete").green());
-                    Ok(())
+                    ));
+                } else if !cli.json {
+                    println!("{}", "Build complete".green());
                 }
+                Ok(())
             }
-            CliCommand::Deploy { path, dry_run } => {
+            CliCommand::Deploy => {
                 let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
@@ -185,24 +196,34 @@ impl CliCommand {
                     if multi {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
-                    match deploy::deploy(ctx, dry_run).await {
-                        Ok(msg) => eprintln!("{msg}"),
+                    match deploy::deploy(ctx, cli.dry_run).await {
+                        Ok(msg) => {
+                            if cli.json {
+                                print_json(&serde_json::json!({"status": "ok", "message": msg}));
+                            } else {
+                                eprintln!("{msg}");
+                            }
+                        }
                         Err(e) => {
-                            warn!("Deploy failed: {e}");
+                            if cli.json {
+                                print_json(&serde_json::json!({"status": "error", "message": e.to_string()}));
+                            } else {
+                                warn!("Deploy failed: {e}");
+                            }
                             has_errors = true;
                         }
                     }
                 }
                 if has_errors {
-                    Err(CiteError::Deploy(
+                    return Err(CiteError::Deploy(
                         "Deploy failed in one or more projects".to_string(),
-                    ))
-                } else {
-                    println!("{}", format!("Deploy complete").green());
-                    Ok(())
+                    ));
+                } else if !cli.json {
+                    println!("{}", "Deploy complete".green());
                 }
+                Ok(())
             }
-            CliCommand::Status { path } => {
+            CliCommand::Status => {
                 let Some(projects) = load_projects(path, "No projects found")? else {
                     return Ok(());
                 };
@@ -210,53 +231,66 @@ impl CliCommand {
                 for ctx in &projects {
                     if multi {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
-                    } else {
+                    } else if !cli.json {
                         info!("Project Status");
                     }
-                    project::print_status(ctx);
+                    if cli.json {
+                        print_json(&serde_json::json!({"project": ctx.manifest.project.name, "root": ctx.root.to_string_lossy(), "podcasts": ctx.metadata.podcasts.len()}));
+                    } else {
+                        project::print_status(ctx);
+                    }
                 }
-                println!("{}", format!("Status complete").green());
+                if !cli.json {
+                    println!("{}", "Status complete".green());
+                }
                 Ok(())
             }
-            CliCommand::Doctor { path } => {
-                let root = match path.clone() {
-                    Some(p) => PathBuf::from(p),
-                    None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                };
+            CliCommand::Doctor => {
+                let root = PathBuf::from(path);
                 let Some(projects) = load_projects(path, "")? else {
-                    info!("Running diagnostics");
-                    doctor::check_file(&root, "cite.toml", "run 'cite-cli init'");
-                    doctor::check_file(&root, "metadata.yml", "");
+                    if cli.json {
+                        print_json(&serde_json::json!({"status": "noproject", "errors": ["No cite.toml found"]}));
+                    } else {
+                        info!("Running diagnostics");
+                        doctor::check_file(&root, "cite.toml", "run 'cite-cli init'");
+                        doctor::check_file(&root, "metadata.yml", "");
+                    }
                     return Ok(());
                 };
                 let multi = projects.len() > 1;
-                let mut overall_has_errors = false;
-                let mut overall_has_warnings = false;
+                let mut all_outcomes: Vec<serde_json::Value> = Vec::new();
+                let mut has_errors = false;
+                let mut has_warnings = false;
                 for ctx in &projects {
                     if multi {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
                     let outcome = doctor::run(ctx)?;
+                    if cli.json
+                        && let Ok(v) = serde_json::to_value(&outcome) {
+                            all_outcomes.push(v);
+                    }
                     if outcome.has_errors() {
-                        overall_has_errors = true;
+                        has_errors = true;
                     }
                     if outcome.has_warnings() {
-                        overall_has_warnings = true;
+                        has_warnings = true;
                     }
                 }
-                if overall_has_errors {
+                if cli.json {
+                    print_json(&all_outcomes);
+                }
+                if has_errors {
                     return Err(CiteError::Config(
                         "Doctor found validation errors".to_string(),
                     ));
-                } else if !overall_has_warnings {
-                    println!(
-                        "{}",
-                        format!("Doctor check complete — no issues found").green()
-                    );
+                }
+                if !cli.json && !has_warnings {
+                    println!("{}", "Doctor check complete — no issues found".green());
                 }
                 Ok(())
             }
-            CliCommand::Clean { path } => {
+            CliCommand::Clean => {
                 let Some(projects) = load_projects(path, "No projects found")? else {
                     return Ok(());
                 };
@@ -266,38 +300,36 @@ impl CliCommand {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
                     ctx.clean()?;
-                    println!("{}", format!("Cleaned build artifacts").green());
+                    if cli.json {
+                        print_json(&serde_json::json!({"status": "ok", "project": ctx.manifest.project.name}));
+                    } else {
+                        println!("{}", "Cleaned build artifacts".green());
+                    }
                 }
                 Ok(())
             }
-            CliCommand::Rollback { id, path } => {
-                let root = match path {
-                    Some(p) => PathBuf::from(p),
-                    None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                };
+            CliCommand::Rollback { id } => {
+                let root = PathBuf::from(path);
                 let ctx = project::ProjectContext::load(&root)?;
                 let msg = deploy::rollback(&ctx, &id).await?;
-                info!("{msg}");
+                if cli.json {
+                    print_json(&serde_json::json!({"status": "ok", "message": msg}));
+                } else {
+                    info!("{msg}");
+                }
                 Ok(())
             }
-            CliCommand::Login {
-                email,
-                password,
-                path,
-            } => {
-                let root = match path {
-                    Some(p) => PathBuf::from(p),
-                    None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                };
+            CliCommand::Login { email, password } => {
+                let root = PathBuf::from(path);
                 let ctx = project::ProjectContext::load(&root)?;
                 deploy::login(&ctx, email, password).await?;
-                println!("{}", format!("Login complete").green());
+                println!("{}", "Login complete".green());
                 Ok(())
             }
             CliCommand::Upgrade => {
                 let msg = upgrade::upgrade().await?;
                 info!("{msg}");
-                println!("{}", format!("Upgrade complete").green());
+                println!("{}", "Upgrade complete".green());
                 Ok(())
             }
             CliCommand::Uninstall { force } => uninstall::uninstall(force),

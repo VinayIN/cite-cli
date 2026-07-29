@@ -17,6 +17,9 @@ pub enum CiteError {
     Deploy(String),
 
     #[error("{0}")]
+    Database(String),
+
+    #[error("{0}")]
     Network(#[from] reqwest::Error),
 }
 
@@ -35,5 +38,11 @@ impl From<toml::de::Error> for CiteError {
 impl From<serde_json::Error> for CiteError {
     fn from(e: serde_json::Error) -> Self {
         CiteError::Parse(format!("JSON error: {}", e))
+    }
+}
+
+impl From<duckdb::Error> for CiteError {
+    fn from(e: duckdb::Error) -> Self {
+        CiteError::Database(format!("DuckDB error: {}", e))
     }
 }

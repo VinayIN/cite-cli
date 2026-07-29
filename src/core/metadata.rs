@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Podcast {
     pub title: String,
     pub file: String,
@@ -23,19 +24,6 @@ pub struct Podcast {
     pub citation: Option<String>,
 }
 
-impl Default for Podcast {
-    fn default() -> Self {
-        Self {
-            title: String::new(),
-            file: String::new(),
-            source_url: None,
-            category: None,
-            thumbnail: None,
-            audio: None,
-            citation: None,
-        }
-    }
-}
 
 fn get_uuid() -> String {
     Uuid::new_v4().to_string()
@@ -65,15 +53,11 @@ impl Default for TimelineEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Metadata {
     pub podcasts: Vec<Podcast>,
 }
 
-impl Default for Metadata {
-    fn default() -> Self {
-        Self { podcasts: vec![] }
-    }
-}
 
 impl Metadata {
     pub fn referenced_files(&self) -> Vec<String> {

@@ -152,10 +152,9 @@ Global options:
 
 ```
 --path <path>               Path to project (default: current directory)
---config <path>             Path to credentials file (default: ~/.cite/credentials.toml)
---json                      Machine-readable JSON output
 --quiet                     Suppress output
 --verbose                   Detailed output
+--json                      Machine-readable JSON output
 --dry-run                   Preview changes without executing
 ```
 

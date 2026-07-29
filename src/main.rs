@@ -16,7 +16,7 @@ struct FormattedTimestamp;
 
 impl FormatTime for FormattedTimestamp {
     fn format_time(&self, w: &mut Writer<'_>) -> std::fmt::Result {
-        write!(w, "{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"))
+        write!(w, "{}", chrono::Local::now().format("%H:%M:%S"))
     }
 }
 
@@ -26,11 +26,28 @@ async fn main() {
 
     let filter = if cli.verbose {
         EnvFilter::new("cite_cli=trace")
+    } else if cli.quiet {
+        EnvFilter::new("cite_cli=error")
     } else {
         EnvFilter::new("cite_cli=info")
     };
 
-    if let Some(cmd) = cli.command {
+    if cli.command.is_none() || cli.tui {
+        let (log_tx, log_rx) = mpsc::unbounded_channel();
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .with_level(true)
+            .with_timer(FormattedTimestamp)
+            .with_ansi(false)
+            .with_writer(move || LogWriter { tx: log_tx.clone(), buf: String::new() })
+            .init();
+        info!("cite-cli v{}", env!("CARGO_PKG_VERSION"));
+        if let Err(e) = tui::run_tui(log_rx).await {
+            eprintln!("{} {}", "error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    } else {
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_target(false)
@@ -38,32 +55,9 @@ async fn main() {
             .with_timer(FormattedTimestamp)
             .with_writer(std::io::stderr)
             .init();
-
         info!("cite-cli v{}", env!("CARGO_PKG_VERSION"));
-
-        if let Err(e) = cmd.execute().await {
-            eprintln!("{} {}", "error:".red().bold(), e);
-            std::process::exit(1);
-        }
-    } else {
-        let (log_tx, log_rx) = mpsc::unbounded_channel::<String>();
-        let make_writer = move || LogWriter {
-            tx: log_tx.clone(),
-            buf: String::new(),
-        };
-
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_target(false)
-            .with_level(true)
-            .with_timer(FormattedTimestamp)
-            .with_ansi(false)
-            .with_writer(make_writer)
-            .init();
-
-        info!("cite-cli v{}", env!("CARGO_PKG_VERSION"));
-
-        if let Err(e) = tui::run_tui(log_rx).await {
+        let cmd = cli.command.clone().unwrap();
+        if let Err(e) = cmd.execute(&cli).await {
             eprintln!("{} {}", "error:".red().bold(), e);
             std::process::exit(1);
         }
@@ -77,10 +71,8 @@ struct LogWriter {
 
 impl Write for LogWriter {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        match std::str::from_utf8(data) {
-            Ok(s) => self.buf.push_str(s),
-            Err(_) => self.buf.push_str(&String::from_utf8_lossy(data)),
-        }
+        let s = std::str::from_utf8(data).unwrap_or_default();
+        self.buf.push_str(s);
         while let Some(pos) = self.buf.find('\n') {
             let line = self.buf[..pos].trim_end().to_string();
             self.buf.drain(..=pos);
@@ -88,7 +80,6 @@ impl Write for LogWriter {
         }
         Ok(data.len())
     }
-
     fn flush(&mut self) -> std::io::Result<()> {
         if !self.buf.trim_end().is_empty() {
             let line = std::mem::take(&mut self.buf).trim_end().to_string();

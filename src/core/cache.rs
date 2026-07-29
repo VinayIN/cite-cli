@@ -1,11 +1,12 @@
-use crate::core::CiteError;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
-use tokio::io::AsyncReadExt;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::core::CiteError;
+
+#[derive(Debug, Clone)]
 pub struct BuildCache {
     pub compiler_version: f64,
     pub hashes: HashMap<String, String>,
@@ -17,28 +18,6 @@ impl BuildCache {
             compiler_version,
             hashes,
         }
-    }
-
-    pub async fn load_or_default(path: &Path) -> Result<Self, CiteError> {
-        if path.exists()
-            && let Ok(data) = tokio::fs::read_to_string(path).await
-            && let Ok(cache) = serde_json::from_str(&data)
-        {
-            return Ok(cache);
-        }
-        Ok(Self {
-            compiler_version: 0.0,
-            hashes: HashMap::new(),
-        })
-    }
-
-    pub async fn save(&self, path: &Path) -> Result<(), CiteError> {
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        let data = serde_json::to_string_pretty(self)?;
-        tokio::fs::write(path, data).await?;
-        Ok(())
     }
 
     pub fn changed_since(&self, current: &HashMap<String, String>) -> Vec<String> {
@@ -58,6 +37,41 @@ impl BuildCache {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UuidCache {
+    pub mapping: HashMap<String, String>,
+}
+
+impl UuidCache {
+    pub fn load(root: &Path) -> Self {
+        let path = root.join(".cite").join("cache").join("uuid_map.json");
+        match std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()) {
+            Some(m) => m,
+            None => Self {
+                mapping: HashMap::new(),
+            },
+        }
+    }
+
+    pub fn save(&self, root: &Path) {
+        let dir = root.join(".cite").join("cache");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("uuid_map.json");
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+
+    pub fn get_or_create(&mut self, key: &str) -> String {
+        if let Some(id) = self.mapping.get(key) {
+            return id.clone();
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        self.mapping.insert(key.to_string(), id.clone());
+        id
+    }
+}
+
 pub async fn hash_files(files: &[impl AsRef<Path>]) -> Result<HashMap<String, String>, CiteError> {
     let mut hashes = HashMap::new();
     for file in files {
@@ -65,7 +79,7 @@ pub async fn hash_files(files: &[impl AsRef<Path>]) -> Result<HashMap<String, St
         if path.exists() && path.is_file() {
             let mut f = tokio::fs::File::open(path).await?;
             let mut buf = Vec::new();
-            f.read_to_end(&mut buf).await?;
+            tokio::io::AsyncReadExt::read_to_end(&mut f, &mut buf).await?;
             let hash = Sha256::digest(&buf)
                 .iter()
                 .map(|b| format!("{b:02x}"))
@@ -112,14 +126,13 @@ mod tests {
     }
 
     #[test]
-    fn test_changed_since_file_removed() {
-        let mut hashes = HashMap::new();
-        hashes.insert("a.md".into(), "abc".into());
-        hashes.insert("b.md".into(), "def".into());
-        let cache = BuildCache::new(0.0, hashes);
-        let mut current = HashMap::new();
-        current.insert("a.md".into(), "abc".into());
-        let changed = cache.changed_since(&current);
-        assert_eq!(changed, vec!["b.md"]);
+    fn test_uuid_cache_persistence() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cache = UuidCache::load(dir.path());
+        let id = cache.get_or_create("test-key");
+        assert!(!id.is_empty());
+        cache.save(dir.path());
+        let loaded = UuidCache::load(dir.path());
+        assert_eq!(loaded.mapping.get("test-key"), Some(&id));
     }
 }

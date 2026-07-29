@@ -25,7 +25,6 @@ impl Default for ProjectConfig {
 pub struct BuildConfig {
     pub compiler_version: f64,
     pub incremental: bool,
-    pub output_format: String,
 }
 
 impl Default for BuildConfig {
@@ -33,92 +32,26 @@ impl Default for BuildConfig {
         Self {
             compiler_version: 1.0,
             incremental: true,
-            output_format: "json".to_string(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct BackendConfig {
     pub staging_url: Option<String>,
     pub staging_service_key: Option<String>,
 }
 
-impl Default for BackendConfig {
-    fn default() -> Self {
-        Self {
-            staging_url: None,
-            staging_service_key: None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct CompilerConfig {
-    pub enabled_extensions: Vec<String>,
-}
-
-impl Default for CompilerConfig {
-    fn default() -> Self {
-        Self {
-            enabled_extensions: vec!["tables".to_string(), "footnotes".to_string()],
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AssetsConfig {
-    pub audio_formats: Vec<String>,
-    pub image_formats: Vec<String>,
-}
-
-impl Default for AssetsConfig {
-    fn default() -> Self {
-        Self {
-            audio_formats: vec!["mp3".to_string(), "wav".to_string(), "m4a".to_string()],
-            image_formats: vec!["jpg".to_string(), "png".to_string()],
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ValidationConfig {
-    pub strict: bool,
-}
-
-impl Default for ValidationConfig {
-    fn default() -> Self {
-        Self { strict: true }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Default)]
 pub struct Manifest {
     pub project: ProjectConfig,
     pub build: BuildConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<BackendConfig>,
-    pub compiler: CompilerConfig,
-    pub assets: AssetsConfig,
-    pub validation: ValidationConfig,
-}
-
-impl Default for Manifest {
-    fn default() -> Self {
-        Self {
-            project: ProjectConfig::default(),
-            build: BuildConfig::default(),
-            backend: None,
-            compiler: CompilerConfig::default(),
-            assets: AssetsConfig::default(),
-            validation: ValidationConfig::default(),
-        }
-    }
 }
 
 impl Manifest {
@@ -130,9 +63,6 @@ impl Manifest {
             },
             build: BuildConfig::default(),
             backend: None,
-            compiler: CompilerConfig::default(),
-            assets: AssetsConfig::default(),
-            validation: ValidationConfig::default(),
         }
     }
 }
@@ -150,7 +80,6 @@ mod tests {
         assert_eq!(m.build.compiler_version, 1.0);
         assert!(m.build.incremental);
         assert!(m.backend.is_none());
-        assert!(m.validation.strict);
         assert!(m.project.artist_id.is_empty());
     }
 
@@ -166,7 +95,6 @@ artist_id = "11111111-1111-1111-1111-111111111111"
 [build]
 compiler_version = 1.0
 incremental = false
-output_format = "json"
 
 [backend]
 staging_url = "https://example.com"
@@ -188,12 +116,7 @@ strict = true
         assert_eq!(m.project.metadata_file, "example.yml");
         assert_eq!(m.project.artist_id, "11111111-1111-1111-1111-111111111111");
         assert_eq!(m.build.compiler_version, 1.0);
-        assert_eq!(m.build.output_format, "json");
         assert!(!m.build.incremental);
-        assert_eq!(m.compiler.enabled_extensions, vec!["tables"]);
-        assert_eq!(m.assets.audio_formats, vec!["mp3"]);
-        assert_eq!(m.assets.image_formats, vec!["jpg"]);
-        assert!(m.validation.strict);
         assert_eq!(
             m.backend.as_ref().unwrap().staging_url.as_deref(),
             Some("https://example.com")
@@ -214,10 +137,5 @@ artist_id = "abc"
         assert_eq!(m.project.artist_id, "abc");
         assert_eq!(m.build.compiler_version, 1.0);
         assert!(m.build.incremental);
-        assert_eq!(m.build.output_format, "json");
-        assert_eq!(m.compiler.enabled_extensions, vec!["tables", "footnotes"]);
-        assert_eq!(m.assets.audio_formats, vec!["mp3", "wav", "m4a"]);
-        assert_eq!(m.assets.image_formats, vec!["jpg", "png"]);
-        assert!(m.validation.strict);
     }
 }

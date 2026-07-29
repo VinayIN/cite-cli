@@ -61,7 +61,7 @@ Run `cite-cli` with no arguments to enter the TUI:
 | `upgrade` | Self-update CLI |
 | `uninstall` | Remove CLI |
 
-> Global options: `--path <dir>`, `--json`, `--quiet`, `--verbose`, `--dry-run`, `--config <path>`.
+> Global options: `--path <dir>`, `--json`, `--quiet`, `--verbose`, `--dry-run`.
 
 ## Project Structure
 

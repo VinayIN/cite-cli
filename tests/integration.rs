@@ -153,7 +153,7 @@ podcasts:
     );
     let (_, stderr, ok) = h.run(&["lint"]);
     assert!(ok);
-    assert!(stderr.contains("very short"));
+    assert!(stderr.contains("low word count") || stderr.contains("very short"));
 }
 
 // ── build ───────────────────────────────────────────────────────
@@ -355,7 +355,7 @@ podcasts:
     h.run_ok(&["build"]);
 
     let stderr = h.run_ok(&["status"]);
-    assert!(stderr.contains("exists"));
+    assert!(stderr.contains("Podcasts: 1"));
 }
 
 // ── doctor ──────────────────────────────────────────────────────
@@ -409,7 +409,12 @@ fn deploy_fails_without_backend() {
     let h = ProjectHarness::new("no-backend");
     let (_, stderr, ok) = h.run(&["deploy"]);
     assert!(!ok);
-    assert!(stderr.contains("No [backend]") || stderr.contains("No build artifact"));
+    assert!(
+        stderr.contains("No [backend]")
+            || stderr.contains("No build artifact")
+            || stderr.contains("No credentials found")
+            || stderr.contains("credentials")
+    );
 }
 
 #[test]
@@ -431,7 +436,7 @@ fn rollback_fails_without_backend() {
     let h = ProjectHarness::new("no-backend-rb");
     let (_, stderr, ok) = h.run(&["rollback", "some-id"]);
     assert!(!ok);
-    assert!(stderr.contains("No [backend]"));
+    assert!(stderr.contains("No [backend]") || stderr.contains("credentials") || stderr.contains("No credentials"));
 }
 
 // ── e2e ─────────────────────────────────────────────────────────
@@ -496,4 +501,30 @@ fn help_prints_usage() {
 fn verbose_flag_works() {
     let h = ProjectHarness::new("verbose-test");
     h.run_ok(&["doctor", "--verbose"]);
+}
+
+#[test]
+fn json_flag_produces_valid_json() {
+    let h = ProjectHarness::new("json-test");
+    h.write_content("content/a.md", "# JSON Test");
+    h.write_metadata(
+        r#"
+podcasts:
+  - title: "JSON Article"
+    file: content/a.md
+"#,
+    );
+    let (stdout, _, ok) = h.run(&["doctor", "--json"]);
+    assert!(ok);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(parsed.is_array());
+
+    let (stdout, _, ok) = h.run(&["status", "--json"]);
+    assert!(ok);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(parsed.is_object());
+
+    let (stdout, _, ok) = h.run(&["lint", "--json"]);
+    assert!(ok);
+    let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
 }

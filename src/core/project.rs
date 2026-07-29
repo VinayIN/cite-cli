@@ -5,6 +5,73 @@ use crate::core::manifest::Manifest;
 use crate::core::metadata::Metadata;
 use tracing::info;
 
+/// A stored project entry from the global DuckDB
+#[derive(Debug, Clone)]
+pub struct StoredProject {
+    pub id: String,
+    pub name: String,
+}
+
+/// A podcast record from the DB (with content)
+#[derive(Debug, Clone)]
+pub struct StoredPodcast {
+    pub title: String,
+    pub word_count: i64,
+}
+
+/// A timeline entry from the DB
+#[derive(Debug, Clone)]
+pub struct StoredTimeline {
+    pub date: Option<String>,
+    pub title: String,
+}
+
+/// A deployment record from the DB
+#[derive(Debug, Clone)]
+pub struct StoredDeployment {
+    pub deployment_id: String,
+    pub deployed_at: String,
+    pub success: bool,
+}
+
+/// A build record from the DB
+#[derive(Debug, Clone)]
+pub struct StoredBuild {
+    pub built_at: String,
+    pub podcast_count: i64,
+    pub timeline_count: i64,
+    pub total_words: i64,
+    pub duration_ms: i64,
+    pub was_incremental: bool,
+}
+
+/// Per-project analytics from the DB
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ProjectStats {
+    pub podcast_count: i64,
+    pub timeline_count: i64,
+    pub total_words: i64,
+    pub build_count: i64,
+    pub last_built: Option<String>,
+    pub deployment_count: i64,
+    pub last_deployed: Option<String>,
+    pub podcasts_by_month: Vec<(String, i64)>,
+    pub citations_by_decade: Vec<(String, i64)>,
+}
+
+/// Cross-project analytics from the DB
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct AllStats {
+    pub project_count: i64,
+    pub total_podcasts: i64,
+    pub total_timelines: i64,
+    pub total_words: i64,
+    pub total_builds: i64,
+    pub top_projects: Vec<(String, i64, i64)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectContext {
     pub root: PathBuf,
@@ -13,6 +80,10 @@ pub struct ProjectContext {
 }
 
 impl ProjectContext {
+    pub fn project_id(&self) -> String {
+        self.root.to_string_lossy().to_string()
+    }
+
     pub fn load(root: &Path) -> Result<Self, CiteError> {
         let manifest_path = root.join("cite.toml");
         if !manifest_path.exists() {
@@ -47,8 +118,8 @@ impl ProjectContext {
         self.root.join("build")
     }
 
-    pub fn cache_path(&self) -> PathBuf {
-        self.root.join(".cite-cache.json")
+    pub fn id(&self) -> String {
+        self.project_id()
     }
 
     pub fn content_files(&self) -> Vec<PathBuf> {
@@ -64,9 +135,9 @@ impl ProjectContext {
         if build_dir.exists() {
             std::fs::remove_dir_all(&build_dir)?;
         }
-        let cache = self.cache_path();
-        if cache.exists() {
-            std::fs::remove_file(&cache)?;
+
+        if let Ok(db) = crate::core::db::DbManager::open() {
+            let _ = db.clear_cache(&self.id());
         }
         Ok(())
     }
@@ -82,25 +153,44 @@ pub fn print_status(ctx: &ProjectContext) {
         info!("Staging: {u}");
     }
     info!("Podcasts: {}", ctx.metadata.podcasts.len());
-    let build_path = ctx.build_dir().join("content.json");
-    if build_path.exists() {
-        info!("Build: exists");
-        if let Ok(meta) = std::fs::metadata(&build_path)
-            && let Ok(modified) = meta.modified()
-            && let Ok(elapsed) = modified.elapsed()
-        {
-            let secs = elapsed.as_secs();
-            let since = if secs < 60 {
-                "just now".to_string()
-            } else if secs < 3600 {
-                format!("{}m ago", secs / 60)
-            } else {
-                format!("{}h ago", secs / 3600)
-            };
-            info!("Built: {since}");
+
+    if let Ok(db) = crate::core::db::DbManager::open() {
+        let project_id = ctx.id();
+
+        if let Ok(stats) = db.get_project_stats(&project_id) {
+            info!("Total words: {}", stats.total_words);
+            info!("Timeline entries: {}", stats.timeline_count);
+            info!("Builds recorded: {}", stats.build_count);
+            if let Some(ref last) = stats.last_built {
+                info!("Last build: {last}");
+            }
+            info!("Deployments: {}", stats.deployment_count);
+            if let Some(ref last) = stats.last_deployed {
+                info!("Last deploy: {last}");
+            }
         }
-    } else {
-        info!("Build: not built");
+
+        if let Ok(builds) = db.get_build_history(&project_id)
+            && let Some(b) = builds.first() {
+                info!(
+                    "Recent build: {} podcasts, {} timelines, {} words, {}ms ({})",
+                    b.podcast_count,
+                    b.timeline_count,
+                    b.total_words,
+                    b.duration_ms,
+                    if b.was_incremental { "incr" } else { "full" },
+                );
+            }
+
+        if let Ok(deploys) = db.get_deployment_history(&project_id)
+            && let Some(d) = deploys.first() {
+                info!(
+                    "Recent deploy: {} at {} ({})",
+                    d.deployment_id,
+                    d.deployed_at,
+                    if d.success { "ok" } else { "fail" },
+                );
+            }
     }
 }
 
@@ -122,4 +212,113 @@ pub fn discover_projects(root: &Path) -> Vec<PathBuf> {
 
     projects.sort();
     projects
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_discover_projects_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects = discover_projects(dir.path());
+        assert!(projects.is_empty());
+    }
+
+    #[test]
+    fn test_discover_projects_current_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cite.toml"), "[project]\nname = \"test\"\n").unwrap();
+        let projects = discover_projects(dir.path());
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0], dir.path());
+    }
+
+    #[test]
+    fn test_discover_projects_subdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("cite.toml"), "[project]\nname = \"sub\"\n").unwrap();
+        let projects = discover_projects(dir.path());
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0], sub);
+    }
+
+    #[test]
+    fn test_discover_projects_both() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cite.toml"), "[project]\nname = \"root\"\n").unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("cite.toml"), "[project]\nname = \"sub\"\n").unwrap();
+        let projects = discover_projects(dir.path());
+        assert_eq!(projects.len(), 2);
+    }
+
+    #[test]
+    fn test_project_context_load_fails_without_cite_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = ProjectContext::load(dir.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cite.toml"));
+    }
+
+    #[test]
+    fn test_project_context_load_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml_content = r#"
+[project]
+name = "test-project"
+language = "en"
+metadata_file = "meta.yml"
+artist_id = "00000000-0000-0000-0000-000000000001"
+
+[build]
+compiler_version = 1.0
+incremental = true
+"#;
+        std::fs::write(dir.path().join("cite.toml"), toml_content).unwrap();
+        std::fs::write(dir.path().join("meta.yml"), "podcasts: []").unwrap();
+        let ctx = ProjectContext::load(dir.path()).unwrap();
+        assert_eq!(ctx.manifest.project.name, "test-project");
+        assert_eq!(ctx.manifest.project.language, "en");
+        assert_eq!(ctx.manifest.build.compiler_version, 1.0);
+    }
+
+    #[test]
+    fn test_project_context_content_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cite.toml"), "[project]\nname = \"x\"\n").unwrap();
+        let ctx = ProjectContext::load(dir.path()).unwrap();
+        assert_eq!(ctx.content_dir(), dir.path().join("content"));
+    }
+
+    #[test]
+    fn test_project_context_build_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cite.toml"), "[project]\nname = \"x\"\n").unwrap();
+        let ctx = ProjectContext::load(dir.path()).unwrap();
+        assert_eq!(ctx.build_dir(), dir.path().join("build"));
+    }
+
+    #[test]
+    fn test_project_context_id() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cite.toml"), "[project]\nname = \"x\"\n").unwrap();
+        let ctx = ProjectContext::load(dir.path()).unwrap();
+        assert_eq!(ctx.id(), dir.path().to_string_lossy());
+    }
+
+    #[test]
+    fn test_project_context_clean_removes_build_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cite.toml"), "[project]\nname = \"x\"\n").unwrap();
+        std::fs::create_dir(dir.path().join("build")).unwrap();
+        std::fs::write(dir.path().join("build").join("artifact.txt"), "data").unwrap();
+        let ctx = ProjectContext::load(dir.path()).unwrap();
+        assert!(ctx.build_dir().exists());
+        ctx.clean().unwrap();
+        assert!(!ctx.build_dir().exists());
+    }
 }
