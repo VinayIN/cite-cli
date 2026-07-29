@@ -1,7 +1,3 @@
-# cite-cli
-
-CLI tool for scaffolding, validating, building, and deploying podcast content to Supabase.
-
 ## Installation
 
 ### Quick install
@@ -10,6 +6,7 @@ CLI tool for scaffolding, validating, building, and deploying podcast content to
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.2/cite-cli-installer.sh | sh
 ```
+
 (Windows only)
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.2/cite-cli-installer.ps1 | iex"
@@ -24,56 +21,86 @@ cargo build --release
 ./target/release/cite-cli --help
 ```
 
-## Usage
+## Quick Start
 
 ```bash
 cite-cli init my-project
 # edit metadata.yml and add content files
 cite-cli doctor --path my-project
 cite-cli build --path my-project
-cite-cli status --path my-project
+cite-cli login
 cite-cli deploy --path my-project
 ```
 
-> TUI: Running `cite-cli` will open an interactive terminal UI for running the commands.
-> NOTE: The editing of content files should still be done on your IDE.
+## Interactive Terminal UI
 
-## Tests
+Run `cite-cli` with no arguments to enter the TUI:
 
-```bash
-cargo test
-```
+| Key | Mode |
+|-----|------|
+| `m` | Main — projects, commands, logs |
+| `s` | Analytics — project statistics and history |
+| `e` | Explorer — podcasts, timelines, builds, deployments |
+| `h` | History — build and deployment timelines |
+
+> Navigation: `Tab`/`Shift+Tab` (panels), `↑`/`↓` (lists), `Enter` (execute/select), `r` (refresh), `Esc` (exit).
 
 ## Commands
 
 | Command | Description |
-|---|---|---|
-| `init <name>` | Scaffold a new project |
-| `doctor` | Validate structure, metadata, file existence, asset formats, and config |
-| `lint` | Word count checks |
-| `build` | Incremental build -> `build/content.json` |
-| `deploy` | Deploy to Supabase (full JSON to storage + table subset) |
-| `status` | Project health overview |
+|---------|-------------|
+| `init <name>` | Create project structure |
+| `doctor` | Validate project, metadata, files, assets, and config |
+| `lint` | Check content quality (word count, structure) and media quality (bitrate, duration, format) |
+| `build` | Compile project → `build/content.json` (incremental) |
+| `deploy` | Upload bundle to Supabase with verification |
+| `status` | Show project health and local analytics |
 | `clean` | Remove build artifacts and cache |
-| `rollback <id>` | Undo a deployment by ID |
-| `login` | Authenticate with Supabase for user-scoped deploys |
-| `upgrade` | Self-update to the latest GitHub release |
-| `uninstall` | Remove cite-cli binary and clean shell config |
+| `rollback <deployment-id>` | Remove a specific deployment from Supabase |
+| `login` | Authenticate with Supabase credentials |
+| `upgrade` | Self-update CLI |
+| `uninstall` | Remove CLI |
 
-All commands accept `--path <dir>` to target a specific directory.
-Without `--path`, projects are auto-discovered in the current directory and subdirectories.
+> Global options: `--path <dir>`, `--json`, `--quiet`, `--verbose`, `--dry-run`, `--config <path>`.
 
 ## Project Structure
 
 ```
 my-project/
-├── cite.toml           # Project manifest
-├── metadata.yml        # Podcast content metadata
-├── content/            # Markdown & BibTeX content files
-│   ├── article1.md     
-│   └── article1.bib
+├── cite.toml           # Project manifest (artist_id UUID)
+├── metadata.yml        # Podcast metadata
+├── content/            # Markdown & BibTeX files
 ├── assets/
-│   ├── audio/          # Podcast audio files
-│   └── image/          # Thumbnails and cover art
-└── build/              # Auto-Generated build output (gitignored)
+│   ├── audio/          # Podcast audio (optional)
+│   └── image/          # Thumbnails (optional)
+└── build/              # Generated output (gitignored)
+```
+
+## Metadata Model
+
+```yaml
+podcasts:
+  - title: "My Podcast"
+    file: content/my-article.md
+    source_url: "https://example.com"
+    category: "artificial intelligence"
+    audio: assets/audio/episode.mp3           # optional
+    thumbnail: assets/image/thumb.jpg         # optional
+    citation: content/my-article.bib          # optional
+```
+
+## Local Analytics
+
+cite-cli maintains a local SQLite database at `.cite/analytics.db` for:
+
+* Compiler cache (file hashes, UUID mappings)
+* Build and deployment history
+* Project and podcast statistics (word count, reading time, audio duration)
+* Asset metadata and usage tracking
+* Offline analytics — no network required
+
+## Tests
+
+```bash
+cargo test
 ```
