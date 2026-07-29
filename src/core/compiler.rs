@@ -130,13 +130,15 @@ pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileOutcome
         let _ = db.sync_project(ctx).await;
         let _ = db
             .record_build(
-                &project_id,
-                cv,
-                bundle.podcasts.len() as i64,
-                timeline_count,
-                total_words,
-                elapsed,
-                was_incremental,
+                &crate::core::project::BuildRecord {
+                    project_id: project_id.clone(),
+                    compiler_version: cv,
+                    podcast_count: bundle.podcasts.len() as i64,
+                    timeline_count,
+                    total_words,
+                    duration_ms: elapsed,
+                    was_incremental,
+                },
             )
             .await;
     }

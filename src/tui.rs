@@ -1030,13 +1030,11 @@ fn render_categorized_project_list(
 ) {
     let is_focused = matches!(focus, Focus::Projects);
 
-    let header_style = Style::new()
-        .fg(if is_focused {
-            Color::Cyan
-        } else {
-            Color::DarkGray
-        })
-        .add_modifier(Modifier::BOLD);
+    let header_style = if is_focused {
+        Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().add_modifier(Modifier::BOLD)
+    };
 
     let mut items: Vec<ListItem> = Vec::new();
 

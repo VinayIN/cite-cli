@@ -351,13 +351,7 @@ impl DbManager {
 
     pub async fn record_build(
         &self,
-        project_id: &str,
-        compiler_version: f64,
-        podcast_count: i64,
-        timeline_count: i64,
-        total_words: i64,
-        duration_ms: i64,
-        was_incremental: bool,
+        record: &super::project::BuildRecord,
     ) -> Result<(), CiteError> {
         let now = chrono::Utc::now().to_rfc3339();
         let id = uuid::Uuid::new_v4().to_string();
@@ -365,33 +359,27 @@ impl DbManager {
             .execute(
                 "INSERT INTO build_history
                         (id, project_id, compiler_version, built_at, podcast_count, timeline_count, total_words, duration_ms, was_incremental)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     id,
-                    project_id,
-                    compiler_version,
+                    record.project_id.clone(),
+                    record.compiler_version,
                     now,
-                    podcast_count,
-                    timeline_count,
-                    total_words,
-                    duration_ms,
-                    was_incremental as i64,
+                    record.podcast_count,
+                    record.timeline_count,
+                    record.total_words,
+                    record.duration_ms,
+                    record.was_incremental as i64,
                 ],
             )
             .await?;
         Ok(())
     }
 
+
     pub async fn record_deployment(
         &self,
-        project_id: &str,
-        deployment_id: &str,
-        storage_path: &str,
-        news_count: i64,
-        timeline_count: i64,
-        asset_count: i64,
-        success: bool,
-        dry_run: bool,
+        report: &super::project::DeployReport,
     ) -> Result<(), CiteError> {
         let now = chrono::Utc::now().to_rfc3339();
         let id = uuid::Uuid::new_v4().to_string();
@@ -399,23 +387,24 @@ impl DbManager {
             .execute(
                 "INSERT INTO deployment_history
                         (id, project_id, deployment_id, deployed_at, storage_path, news_count, timeline_count, asset_count, success, dry_run)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     id,
-                    project_id,
-                    deployment_id,
+                    report.project_id.clone(),
+                    report.deployment_id.clone(),
                     now,
-                    storage_path,
-                    news_count,
-                    timeline_count,
-                    asset_count,
-                    success as i64,
-                    dry_run as i64,
+                    report.storage_path.clone(),
+                    report.news_count,
+                    report.timeline_count,
+                    report.asset_count,
+                    report.success as i64,
+                    report.dry_run as i64,
                 ],
             )
             .await?;
         Ok(())
     }
+
 
     pub async fn get_podcasts_with_content(
         &self,

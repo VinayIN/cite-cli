@@ -147,16 +147,16 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteE
         if let Ok(db) = DbManager::open().await {
             let project_id = ctx.id();
             let _ = db
-                .record_deployment(
-                    &project_id,
-                    &deployment_id,
-                    "",
-                    podcasts.len() as i64,
-                    timelines.len() as i64,
-                    0,
-                    true,
-                    true,
-                )
+                .record_deployment(&crate::core::project::DeployReport {
+                    project_id: project_id.clone(),
+                    deployment_id: deployment_id.clone(),
+                    storage_path: "".to_string(),
+                    news_count: podcasts.len() as i64,
+                    timeline_count: timelines.len() as i64,
+                    asset_count: 0,
+                    success: true,
+                    dry_run: true,
+                })
                 .await;
         }
 
@@ -203,16 +203,16 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteE
     if let Ok(db) = DbManager::open().await {
         let project_id = ctx.id();
         let _ = db
-            .record_deployment(
-                &project_id,
-                &deployment_id,
-                &storage_path,
-                podcast_count,
+            .record_deployment(&crate::core::project::DeployReport {
+                project_id: project_id.clone(),
+                deployment_id: deployment_id.clone(),
+                storage_path: storage_path.clone(),
+                news_count: podcast_count,
                 timeline_count,
                 asset_count,
-                true,
-                false,
-            )
+                success: true,
+                dry_run: false,
+            })
             .await;
     }
 
@@ -248,16 +248,16 @@ pub async fn deploy_staging(ctx: &ProjectContext, dry_run: bool) -> Result<Strin
     if let Ok(db) = DbManager::open().await {
         let _ = db.sync_project(ctx).await;
         let _ = db
-            .record_deployment(
-                &ctx.id(),
-                &deployment_id,
-                "",
-                podcasts,
-                timelines,
-                0,
-                !dry_run,
+            .record_deployment(&crate::core::project::DeployReport {
+                project_id: ctx.id(),
+                deployment_id: deployment_id.clone(),
+                storage_path: "".to_string(),
+                news_count: podcasts,
+                timeline_count: timelines,
+                asset_count: 0,
+                success: !dry_run,
                 dry_run,
-            )
+            })
             .await;
     }
 

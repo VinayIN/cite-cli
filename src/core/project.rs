@@ -5,6 +5,29 @@ use crate::core::manifest::Manifest;
 use crate::core::metadata::Metadata;
 use tracing::info;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BuildRecord {
+    pub project_id: String,
+    pub compiler_version: f64,
+    pub podcast_count: i64,
+    pub timeline_count: i64,
+    pub total_words: i64,
+    pub duration_ms: i64,
+    pub was_incremental: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeployReport {
+    pub project_id: String,
+    pub deployment_id: String,
+    pub storage_path: String,
+    pub news_count: i64,
+    pub timeline_count: i64,
+    pub asset_count: i64,
+    pub success: bool,
+    pub dry_run: bool,
+}
+
 /// A podcast record from the DB (with content)
 #[derive(Debug, Clone)]
 pub struct StoredPodcast {
