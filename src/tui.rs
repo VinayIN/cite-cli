@@ -5,6 +5,7 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
+    symbols,
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
@@ -18,7 +19,8 @@ use tracing::{error, info, warn};
 use crate::core::CiteError;
 use crate::core::db::DbManager;
 use crate::core::project::{
-    self, AllStats, ProjectContext, StoredBuild, StoredDeployment, StoredProject, StoredTimeline,
+    self, AllStats, ProjectContext, ProjectStats, StoredBuild, StoredDeployment,
+    StoredTimeline,
 };
 use crate::core::{compiler, deploy, doctor, scaffold};
 
@@ -114,7 +116,6 @@ pub enum TuiMode {
     Runner,
     Analytics,
     ProjectView,
-    History,
     CommandPalette,
 }
 
@@ -136,25 +137,23 @@ pub enum ProjectTab {
 }
 
 pub struct AnalyticsState {
-    pub stats: Option<AllStats>,
+    pub projects_state: ListState,
+    pub stats: Option<ProjectStats>,
+    pub global: Option<AllStats>,
 }
 
 pub struct ProjectViewState {
-    pub projects: Vec<StoredProject>,
     pub projects_state: ListState,
     pub project_stats: Option<project::ProjectStats>,
     pub podcasts: Vec<project::StoredPodcast>,
     pub podcasts_state: ListState,
     pub timelines: Vec<StoredTimeline>,
     pub timelines_state: ListState,
+    pub builds: Vec<StoredBuild>,
+    pub builds_state: ListState,
+    pub deploys: Vec<StoredDeployment>,
+    pub deploys_state: ListState,
     pub sel_tab: ProjectTab,
-}
-
-pub struct HistoryState {
-    pub show_deploys: bool,
-    pub builds: Vec<(String, StoredBuild)>,
-    pub deploys: Vec<(String, StoredDeployment)>,
-    pub list_state: ListState,
 }
 
 pub struct CommandPaletteState {
@@ -190,7 +189,6 @@ pub struct AppState {
     mode: TuiMode,
     analytics: AnalyticsState,
     project_view: ProjectViewState,
-    history: HistoryState,
     command_palette: CommandPaletteState,
 }
 
@@ -224,22 +222,23 @@ impl AppState {
             tx,
             task: None,
             mode: TuiMode::Runner,
-            analytics: AnalyticsState { stats: None },
+            analytics: AnalyticsState {
+                projects_state: ListState::default(),
+                stats: None,
+                global: None,
+            },
             project_view: ProjectViewState {
-                projects: Vec::new(),
                 projects_state: ListState::default(),
                 project_stats: None,
                 podcasts: Vec::new(),
                 podcasts_state: ListState::default(),
                 timelines: Vec::new(),
                 timelines_state: ListState::default(),
-                sel_tab: ProjectTab::Overview,
-            },
-            history: HistoryState {
-                show_deploys: false,
                 builds: Vec::new(),
+                builds_state: ListState::default(),
                 deploys: Vec::new(),
-                list_state: ListState::default(),
+                deploys_state: ListState::default(),
+                sel_tab: ProjectTab::Overview,
             },
             command_palette: CommandPaletteState {
                 search: String::new(),
@@ -293,6 +292,19 @@ impl AppState {
             .collect()
     }
 
+    fn load_analytics_data(&mut self) {
+        let sel = self.analytics.projects_state.selected().unwrap_or(0);
+        if let Some(root) = self.roots.get(sel) {
+            let project_id = root.to_string_lossy().to_string();
+            if let Ok(db) = DbManager::open() {
+                self.analytics.stats = db.get_project_stats(&project_id).ok();
+            }
+        }
+        if let Ok(db) = DbManager::open() {
+            self.analytics.global = db.get_all_stats().ok();
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) {
         if (key.code == KeyCode::Char('p') || key.code == KeyCode::Char('P'))
             && (key.modifiers.contains(KeyModifiers::SUPER)
@@ -312,78 +324,49 @@ impl AppState {
             TuiMode::Runner => self.handle_runner_key(key),
             TuiMode::Analytics => self.handle_analytics_key(key),
             TuiMode::ProjectView => self.handle_project_view_key(key),
-            TuiMode::History => self.handle_history_key(key),
             TuiMode::CommandPalette => self.handle_command_palette_key(key),
         }
     }
 
     fn enter_analytics(&mut self) {
-        self.analytics.stats = DbManager::open()
-            .ok()
-            .and_then(|db| db.get_all_stats().ok());
+        let mut projects_state = ListState::default();
+        if !self.roots.is_empty() {
+            projects_state.select(Some(0));
+        }
+        self.analytics = AnalyticsState {
+            projects_state,
+            stats: None,
+            global: None,
+        };
+        self.load_analytics_data();
         self.mode = TuiMode::Analytics;
+        self.focus = Focus::Projects;
     }
 
     fn enter_project_view(&mut self) {
-        let db = DbManager::open().ok();
-        let projects = db
-            .as_ref()
-            .and_then(|d| d.list_projects().ok())
-            .unwrap_or_default();
         let mut projects_state = ListState::default();
-        if !projects.is_empty() {
+        if !self.roots.is_empty() {
             projects_state.select(Some(0));
         }
 
         let mut state = ProjectViewState {
-            projects,
             projects_state,
             project_stats: None,
             podcasts: Vec::new(),
             podcasts_state: ListState::default(),
             timelines: Vec::new(),
             timelines_state: ListState::default(),
+            builds: Vec::new(),
+            builds_state: ListState::default(),
+            deploys: Vec::new(),
+            deploys_state: ListState::default(),
             sel_tab: ProjectTab::Overview,
         };
 
-        if let Some(p) = state.projects.first()
-            && let Some(ref d) = db
-        {
-            state.project_stats = d.get_project_stats(&p.id).ok();
-            state.podcasts = d.get_podcasts_with_content(&p.id).ok().unwrap_or_default();
-            state.timelines = d.get_timelines(&p.id).ok().unwrap_or_default();
-        }
+        state.load_selected(&self.roots);
         self.project_view = state;
         self.mode = TuiMode::ProjectView;
-    }
-
-    fn enter_history(&mut self) {
-        let db = DbManager::open().ok();
-        let mut builds = Vec::new();
-        let mut deploys = Vec::new();
-
-        if let Some(ref d) = db
-            && let Ok(projects) = d.list_projects()
-        {
-            for p in &projects {
-                if let Ok(b) = d.get_build_history(&p.id) {
-                    builds.extend(b.into_iter().map(|bb| (p.name.clone(), bb)));
-                }
-                if let Ok(dd) = d.get_deployment_history(&p.id) {
-                    deploys.extend(dd.into_iter().map(|dd_| (p.name.clone(), dd_)));
-                }
-            }
-            builds.sort_by(|a, b| b.1.built_at.cmp(&a.1.built_at));
-            deploys.sort_by(|a, b| b.1.deployed_at.cmp(&a.1.deployed_at));
-        }
-
-        self.history = HistoryState {
-            show_deploys: false,
-            builds,
-            deploys,
-            list_state: ListState::default(),
-        };
-        self.mode = TuiMode::History;
+        self.focus = Focus::Projects;
     }
 
     fn handle_runner_key(&mut self, key: KeyEvent) {
@@ -396,7 +379,6 @@ impl AppState {
             KeyCode::Char('m') => self.mode = TuiMode::Runner,
             KeyCode::Char('s') => self.enter_analytics(),
             KeyCode::Char('e') => self.enter_project_view(),
-            KeyCode::Char('h') => self.enter_history(),
             _ => self.handle_runner_nav(key),
         }
     }
@@ -473,11 +455,34 @@ impl AppState {
 
     fn handle_analytics_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('m') => self.mode = TuiMode::Runner,
+            KeyCode::Esc | KeyCode::Char('m') => {
+                self.mode = TuiMode::Runner;
+                self.focus = Focus::Commands;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.focus = if self.focus == Focus::Projects {
+                    Focus::Details
+                } else {
+                    Focus::Projects
+                };
+            }
+            KeyCode::Up => {
+                if self.focus == Focus::Projects {
+                    self.analytics.projects_state.select_previous();
+                    self.load_analytics_data();
+                }
+            }
+            KeyCode::Down => {
+                if self.focus == Focus::Projects {
+                    self.analytics.projects_state.select_next();
+                    self.load_analytics_data();
+                }
+            }
             KeyCode::Char('r') => {
-                self.analytics.stats = DbManager::open()
-                    .ok()
-                    .and_then(|db| db.get_all_stats().ok())
+                self.analytics.stats = None;
+                self.analytics.global = None;
+                self.load_analytics_data();
+                info!(">> Analytics refreshed");
             }
             _ => {}
         }
@@ -485,58 +490,67 @@ impl AppState {
 
     fn handle_project_view_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('m') => self.mode = TuiMode::Runner,
-            KeyCode::Up => match self.project_view.sel_tab {
-                ProjectTab::Podcasts => self.project_view.podcasts_state.select_previous(),
-                ProjectTab::Timelines => self.project_view.timelines_state.select_previous(),
-                _ => {}
-            },
-            KeyCode::Down => match self.project_view.sel_tab {
-                ProjectTab::Podcasts => self.project_view.podcasts_state.select_next(),
-                ProjectTab::Timelines => self.project_view.timelines_state.select_next(),
-                _ => {}
-            },
-            KeyCode::Left | KeyCode::Right => {
-                let tabs = [
-                    ProjectTab::Overview,
-                    ProjectTab::Podcasts,
-                    ProjectTab::Timelines,
-                    ProjectTab::Builds,
-                    ProjectTab::Deployments,
-                ];
-                let idx = tabs
-                    .iter()
-                    .position(|t| *t == self.project_view.sel_tab)
-                    .unwrap_or(0);
-                let new_idx = if key.code == KeyCode::Left {
-                    (idx + tabs.len() - 1) % tabs.len()
+            KeyCode::Esc | KeyCode::Char('m') => {
+                self.mode = TuiMode::Runner;
+                self.focus = Focus::Commands;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.focus = if self.focus == Focus::Projects {
+                    Focus::Details
                 } else {
-                    (idx + 1) % tabs.len()
+                    Focus::Projects
                 };
-                self.project_view.sel_tab = tabs[new_idx];
             }
-            KeyCode::Char('r') => self.load_project_data(),
-            KeyCode::Char('p') | KeyCode::Char('P') => {
-                self.project_view.projects_state.select_previous();
-                self.load_project_data();
+                KeyCode::Up => {
+                if self.focus == Focus::Projects {
+                    self.project_view.projects_state.select_previous();
+                    self.project_view.load_selected(&self.roots);
+                } else if self.focus == Focus::Details {
+                    match self.project_view.sel_tab {
+                        ProjectTab::Podcasts => self.project_view.podcasts_state.select_previous(),
+                        ProjectTab::Timelines => self.project_view.timelines_state.select_previous(),
+                        ProjectTab::Builds => self.project_view.builds_state.select_previous(),
+                        ProjectTab::Deployments => self.project_view.deploys_state.select_previous(),
+                        _ => {}
+                    }
+                }
             }
-            KeyCode::Char('n') | KeyCode::Char('N') => {
-                self.project_view.projects_state.select_next();
-                self.load_project_data();
+                KeyCode::Down => {
+                if self.focus == Focus::Projects {
+                    self.project_view.projects_state.select_next();
+                    self.project_view.load_selected(&self.roots);
+                } else if self.focus == Focus::Details {
+                    match self.project_view.sel_tab {
+                        ProjectTab::Podcasts => self.project_view.podcasts_state.select_next(),
+                        ProjectTab::Timelines => self.project_view.timelines_state.select_next(),
+                        ProjectTab::Builds => self.project_view.builds_state.select_next(),
+                        ProjectTab::Deployments => self.project_view.deploys_state.select_next(),
+                        _ => {}
+                    }
+                }
             }
-            _ => {}
-        }
-    }
-
-    fn handle_history_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('m') => self.mode = TuiMode::Runner,
-            KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
-                self.history.show_deploys = !self.history.show_deploys;
-                self.history.list_state.select(Some(0));
+            KeyCode::Left | KeyCode::Right => {
+                if self.focus == Focus::Details {
+                    let tabs = [
+                        ProjectTab::Overview,
+                        ProjectTab::Podcasts,
+                        ProjectTab::Timelines,
+                        ProjectTab::Builds,
+                        ProjectTab::Deployments,
+                    ];
+                    let idx = tabs
+                        .iter()
+                        .position(|t| *t == self.project_view.sel_tab)
+                        .unwrap_or(0);
+                    let new_idx = if key.code == KeyCode::Left {
+                        (idx + tabs.len() - 1) % tabs.len()
+                    } else {
+                        (idx + 1) % tabs.len()
+                    };
+                    self.project_view.sel_tab = tabs[new_idx];
+                }
             }
-            KeyCode::Up => self.history.list_state.select_previous(),
-            KeyCode::Down => self.history.list_state.select_next(),
+            KeyCode::Char('r') => self.project_view.load_selected(&self.roots),
             _ => {}
         }
     }
@@ -569,18 +583,6 @@ impl AppState {
                 self.command_palette.list_state.select(Some(0));
             }
             _ => {}
-        }
-    }
-
-    fn load_project_data(&mut self) {
-        let sel = self.project_view.projects_state.selected().unwrap_or(0);
-        if let Some(p) = self.project_view.projects.get(sel)
-            && let Ok(db) = DbManager::open()
-        {
-            self.project_view.project_stats = db.get_project_stats(&p.id).ok();
-            self.project_view.podcasts =
-                db.get_podcasts_with_content(&p.id).ok().unwrap_or_default();
-            self.project_view.timelines = db.get_timelines(&p.id).ok().unwrap_or_default();
         }
     }
 
@@ -669,6 +671,22 @@ impl AppState {
             let _ = tx.send(()).await;
         });
         self.task = Some(handle);
+    }
+}
+
+impl ProjectViewState {
+    fn load_selected(&mut self, roots: &[PathBuf]) {
+        let sel = self.projects_state.selected().unwrap_or(0);
+        if let Some(root) = roots.get(sel) {
+            let project_id = root.to_string_lossy().to_string();
+            if let Ok(db) = DbManager::open() {
+                self.project_stats = db.get_project_stats(&project_id).ok();
+                self.podcasts = db.get_podcasts_with_content(&project_id).ok().unwrap_or_default();
+                self.timelines = db.get_timelines(&project_id).ok().unwrap_or_default();
+                self.builds = db.get_build_history(&project_id).ok().unwrap_or_default();
+                self.deploys = db.get_deployment_history(&project_id).ok().unwrap_or_default();
+            }
+        }
     }
 }
 
@@ -773,6 +791,10 @@ fn render(frame: &mut Frame, app: &mut AppState) {
     if app.editor_pick.is_some() {
         render_editor_pick(frame, frame.area(), app);
     }
+
+    if app.mode == TuiMode::CommandPalette {
+        render_command_palette(frame, frame.area(), app);
+    }
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
@@ -803,32 +825,39 @@ fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 fn render_body(frame: &mut Frame, area: Rect, app: &mut AppState) {
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)]).areas(area);
-
-    render_projects(frame, left, app);
-
     match app.mode {
         TuiMode::Runner | TuiMode::CommandPalette => {
+            let [left, right] =
+                Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)])
+                    .areas(area);
+            render_projects_runner(frame, left, app);
             let [content_area, logs_area] =
                 Layout::vertical([Constraint::Fill(1), Constraint::Percentage(35)]).areas(right);
             let [cmd_tabs_area, details_area] =
-                Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(content_area);
+                Layout::vertical([Constraint::Length(3), Constraint::Fill(1)])
+                    .areas(content_area);
             render_cmd_tabs(frame, cmd_tabs_area, app);
             render_cmd_doc(frame, details_area, app);
             render_log(frame, logs_area, app);
         }
-        TuiMode::Analytics => render_analytics_content(frame, right, app),
-        TuiMode::ProjectView => render_project_view_content(frame, right, app),
-        TuiMode::History => render_history_content(frame, right, app),
-    }
-
-    if app.mode == TuiMode::CommandPalette {
-        render_command_palette(frame, frame.area(), app);
+        TuiMode::Analytics => {
+            let [left, right] =
+                Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
+                    .areas(area);
+            render_projects_analytics(frame, left, app);
+            render_analytics_content(frame, right, app);
+        }
+        TuiMode::ProjectView => {
+            let [left, right] =
+                Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
+                    .areas(area);
+            render_projects_explorer(frame, left, app);
+            render_explorer_content(frame, right, app);
+        }
     }
 }
 
-fn render_projects(frame: &mut Frame, area: Rect, app: &mut AppState) {
+fn render_projects_runner(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let is_focused = matches!(app.focus, Focus::Projects);
     let items: Vec<ListItem> = app
         .roots
@@ -841,6 +870,36 @@ fn render_projects(frame: &mut Frame, area: Rect, app: &mut AppState) {
         .highlight_style(Style::new().bold())
         .highlight_symbol("▸ ");
     frame.render_stateful_widget(list, area, &mut app.projects_state);
+}
+
+fn render_projects_analytics(frame: &mut Frame, area: Rect, app: &mut AppState) {
+    let is_focused = matches!(app.focus, Focus::Projects);
+    let items: Vec<ListItem> = app
+        .roots
+        .iter()
+        .map(|root| ListItem::new(root.file_name().and_then(|n| n.to_str()).unwrap_or("?")))
+        .collect();
+
+    let list = List::new(items)
+        .block(block(" Projects ", is_focused))
+        .highlight_style(Style::new().bold())
+        .highlight_symbol("▸ ");
+    frame.render_stateful_widget(list, area, &mut app.analytics.projects_state);
+}
+
+fn render_projects_explorer(frame: &mut Frame, area: Rect, app: &mut AppState) {
+    let is_focused = matches!(app.focus, Focus::Projects);
+    let items: Vec<ListItem> = app
+        .roots
+        .iter()
+        .map(|root| ListItem::new(root.file_name().and_then(|n| n.to_str()).unwrap_or("?")))
+        .collect();
+
+    let list = List::new(items)
+        .block(block(" Projects ", is_focused))
+        .highlight_style(Style::new().bold())
+        .highlight_symbol("▸ ");
+    frame.render_stateful_widget(list, area, &mut app.project_view.projects_state);
 }
 
 fn render_cmd_tabs(frame: &mut Frame, area: Rect, app: &mut AppState) {
@@ -860,6 +919,7 @@ fn render_cmd_tabs(frame: &mut Frame, area: Rect, app: &mut AppState) {
                 .border_style(border_style),
         )
         .select(app.cmds_state.selected().unwrap_or(0))
+        .divider(symbols::DOT)
         .highlight_style(Style::new().bold().fg(Color::Cyan));
 
     frame.render_widget(tabs, area);
@@ -948,14 +1008,16 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
     let (mode_label, help_text) = match app.mode {
         TuiMode::Runner | TuiMode::CommandPalette => (
             " Runner ",
-            "[m] Main  [s] Analytics  [e] Explorer  [h] History  [tab] Cycle  [q] Quit",
+            "[m] Main  [s] Analytics  [e] Explorer  [tab] Cycle  [q] Quit",
         ),
-        TuiMode::Analytics => (" Analytics ", "[r] Refresh  [esc/m] Back to Main"),
+        TuiMode::Analytics => (
+            " Analytics ",
+            "[tab] Switch Panels  [↑/↓] Navigate  [r] Refresh  [esc/m] Back",
+        ),
         TuiMode::ProjectView => (
             " Explorer ",
-            "[←/→] Tabs  [↑/↓] Nav  [r] Refresh  [esc/m] Back to Main",
+            "[tab] Switch Panels  [←/→] Tabs  [↑/↓] Nav  [r] Refresh  [esc/m] Back",
         ),
-        TuiMode::History => (" History ", "[tab] Switch  [↑/↓] Nav  [esc/m] Back to Main"),
     };
 
     let [left_area, right_area] =
@@ -1051,61 +1113,145 @@ fn render_editor_pick(frame: &mut Frame, area: Rect, app: &mut AppState) {
 }
 
 fn render_analytics_content(frame: &mut Frame, area: Rect, app: &AppState) {
-    let inner = area.width.saturating_sub(2) as usize;
-    let lines = if let Some(ref stats) = app.analytics.stats {
-        let mut v = vec![
-            Line::from(format!(
-                "Projects: {}  Podcasts: {}  Timelines: {}  Words: {}  Builds: {}",
-                stats.project_count,
-                stats.total_podcasts,
-                stats.total_timelines,
-                stats.total_words,
-                stats.total_builds
-            )),
-            Line::from(""),
-            Line::from("Top Projects"),
-        ];
-        for (i, (name, pods, words)) in stats.top_projects.iter().enumerate() {
-            let bar = "█".repeat((*words as usize / 1000).min(inner.saturating_sub(30)));
-            v.push(Line::from(format!(
-                "  {}. {:<20} {:>3} pods {:>6} words {}",
-                i + 1,
-                name,
-                pods,
-                words,
-                bar
-            )));
+    let is_focused = matches!(app.focus, Focus::Details);
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Global summary
+    if let Some(ref global) = app.analytics.global {
+        lines.push(Line::from(Span::styled(
+            "Global Summary",
+            Style::new().bold(),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!(
+            "Projects: {}  Podcasts: {}  Timelines: {}  Words: {}  Builds: {}",
+            global.project_count,
+            global.total_podcasts,
+            global.total_timelines,
+            global.total_words,
+            global.total_builds,
+        )));
+        lines.push(Line::from(""));
+    }
+
+    // Per-project stats
+    if let Some(ref stats) = app.analytics.stats {
+        lines.push(Line::from(Span::styled(
+            "Project Statistics",
+            Style::new().bold(),
+        )));
+        lines.push(Line::from(""));
+
+        let project_name = app
+            .roots
+            .get(app.analytics.projects_state.selected().unwrap_or(0))
+            .and_then(|p| p.file_name().and_then(|n| n.to_str()))
+            .unwrap_or("(none selected)");
+        lines.push(Line::from(format!("Project: {}", project_name)));
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!("Podcasts:     {}", stats.podcast_count)));
+        lines.push(Line::from(format!("Total Words:  {}", stats.total_words)));
+
+        let reading_time = if stats.total_words > 0 {
+            format!("{} min (est.)", (stats.total_words as f64 / 200.0).ceil() as u64)
+        } else {
+            "N/A".to_string()
+        };
+        lines.push(Line::from(format!("Reading Time: {}", reading_time)));
+
+        lines.push(Line::from(format!(
+            "Timelines:    {}",
+            stats.timeline_count
+        )));
+
+        // Build info
+        lines.push(Line::from(format!("Builds:       {}", stats.build_count)));
+        if let Some(ref last) = stats.last_built {
+            let d = last.get(..19).unwrap_or(last);
+            lines.push(Line::from(format!("Last Build:   {}", d)));
         }
-        v
+
+        // Deployment info
+        lines.push(Line::from(format!(
+            "Deployments:  {}",
+            stats.deployment_count
+        )));
+        if let Some(ref last) = stats.last_deployed {
+            let d = last.get(..19).unwrap_or(last);
+            lines.push(Line::from(format!("Last Deploy:  {}", d)));
+        }
+
+        if let Some(global) = &app.analytics.global {
+            lines.push(Line::from(format!("Total Assets: {}", global.total_podcasts)));
+        }
+
+        // Podcasts by month
+        if !stats.podcasts_by_month.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Builds by Month",
+                Style::new().bold(),
+            )));
+            for (m, c) in &stats.podcasts_by_month {
+                let bar_width = area.width.saturating_sub(25) as usize;
+                let bar = "█".repeat((*c as usize).min(bar_width));
+                lines.push(Line::from(format!("  {:<10} {:>3}  {}", m, c, bar)));
+            }
+        }
+
+        // Citations by decade
+        if !stats.citations_by_decade.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Citations by Decade",
+                Style::new().bold(),
+            )));
+            for (d, c) in &stats.citations_by_decade {
+                let bar_width = area.width.saturating_sub(25) as usize;
+                let bar = "█".repeat((*c as usize).min(bar_width));
+                lines.push(Line::from(format!("  {:<10} {:>3}  {}", d, c, bar)));
+            }
+        }
     } else {
-        vec![]
-    };
+        lines.push(Line::from(""));
+        lines.push(Line::from("Select a project to view analytics"));
+    }
 
     frame.render_widget(
         Paragraph::new(Text::from(lines))
-            .block(block(" Analytics ", true))
+            .block(block(" Analytics ", is_focused))
             .wrap(Wrap { trim: false }),
         area,
     );
 }
 
-fn render_project_view_content(frame: &mut Frame, area: Rect, app: &mut AppState) {
+fn render_explorer_content(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let pv = &mut app.project_view;
     let [tabs_area, list_area] =
         Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(area);
 
-    let project_name = pv
-        .projects
+    let project_name = app
+        .roots
         .get(pv.projects_state.selected().unwrap_or(0))
-        .map(|p| p.name.as_str())
+        .and_then(|p| p.file_name().and_then(|n| n.to_str()))
         .unwrap_or("(no projects)");
     let titles: Vec<Line> = vec!["Overview", "Podcasts", "Timelines", "Builds", "Deployments"]
         .into_iter()
         .map(Line::from)
         .collect();
 
+    let tabs_is_focused = matches!(app.focus, Focus::Details);
+
     let tabs = Tabs::new(titles)
-        .block(block(format!(" Project: {} ", project_name), true))
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Project: {} ", project_name))
+            .border_style(if tabs_is_focused {
+                Style::new().fg(Color::Cyan)
+            } else {
+                Style::new()
+            }))
+        .divider(symbols::DOT)
         .select(pv.sel_tab as usize)
         .highlight_style(Style::new().bold().fg(Color::Cyan));
     frame.render_widget(tabs, tabs_area);
@@ -1115,48 +1261,54 @@ fn render_project_view_content(frame: &mut Frame, area: Rect, app: &mut AppState
     match pv.sel_tab {
         ProjectTab::Overview => {
             let lines = if let Some(ref stats) = pv.project_stats {
+                let rt = if stats.total_words > 0 {
+                    format!("{} min", (stats.total_words as f64 / 200.0).ceil() as u64)
+                } else {
+                    "N/A".to_string()
+                };
                 let mut v = vec![
                     Line::from("Project Statistics"),
                     Line::from(""),
                     Line::from(format!("  Podcasts:     {}", stats.podcast_count)),
                     Line::from(format!("  Timelines:    {}", stats.timeline_count)),
                     Line::from(format!("  Total Words:  {}", stats.total_words)),
+                    Line::from(format!("  Reading Time: {}", rt)),
                     Line::from(format!("  Builds:       {}", stats.build_count)),
                     Line::from(format!("  Deployments:  {}", stats.deployment_count)),
-                    Line::from(format!(
-                        "  Last Build:   {}",
-                        stats.last_built.as_deref().unwrap_or("never")
-                    )),
-                    Line::from(format!(
-                        "  Last Deploy:  {}",
-                        stats.last_deployed.as_deref().unwrap_or("never")
-                    )),
-                    Line::from(""),
-                    Line::from("Podcasts by Month"),
-                    Line::from(""),
                 ];
-                for (m, c) in &stats.podcasts_by_month {
-                    v.push(Line::from(format!(
-                        "  {:<10} {:>3} {}",
-                        m,
-                        c,
-                        "█".repeat((*c as usize / 2).min(inner.saturating_sub(15)))
-                    )));
+                if let Some(ref last) = stats.last_built {
+                    let d = last.get(..19).unwrap_or(last);
+                    v.push(Line::from(format!("  Last Build:   {}", d)));
+                } else {
+                    v.push(Line::from("  Last Build:   never"));
                 }
-                v.push(Line::from(""));
-                v.push(Line::from("Citations by Decade"));
-                v.push(Line::from(""));
-                for (d, c) in &stats.citations_by_decade {
-                    v.push(Line::from(format!(
-                        "  {:<10} {:>3} {}",
-                        d,
-                        c,
-                        "█".repeat((*c as usize / 2).min(inner.saturating_sub(15)))
-                    )));
+                if let Some(ref last) = stats.last_deployed {
+                    let d = last.get(..19).unwrap_or(last);
+                    v.push(Line::from(format!("  Last Deploy:  {}", d)));
+                } else {
+                    v.push(Line::from("  Last Deploy:  never"));
+                }
+                // Podcasts by month
+                if !stats.podcasts_by_month.is_empty() {
+                    v.push(Line::from(""));
+                    v.push(Line::from("Builds by Month"));
+                    for (m, c) in &stats.podcasts_by_month {
+                        let bar = "█".repeat((*c as usize).min(inner.saturating_sub(15)));
+                        v.push(Line::from(format!("  {:<10} {:>3} {}", m, c, bar)));
+                    }
+                }
+                // Citations by decade
+                if !stats.citations_by_decade.is_empty() {
+                    v.push(Line::from(""));
+                    v.push(Line::from("Citations by Decade"));
+                    for (d, c) in &stats.citations_by_decade {
+                        let bar = "█".repeat((*c as usize).min(inner.saturating_sub(15)));
+                        v.push(Line::from(format!("  {:<10} {:>3} {}", d, c, bar)));
+                    }
                 }
                 v
             } else {
-                vec![]
+                vec![Line::from("No data available")]
             };
             frame.render_widget(
                 Paragraph::new(Text::from(lines))
@@ -1195,80 +1347,63 @@ fn render_project_view_content(frame: &mut Frame, area: Rect, app: &mut AppState
                 .highlight_symbol("▸ ");
             frame.render_stateful_widget(list, list_area, &mut pv.timelines_state);
         }
-        ProjectTab::Builds | ProjectTab::Deployments => {
-            let title = if pv.sel_tab == ProjectTab::Builds {
-                "Builds"
-            } else {
-                "Deployments"
-            };
-            let lines = vec![Line::from(format!("{} History", title)), Line::from("")];
-            frame.render_widget(
-                Paragraph::new(Text::from(lines))
-                    .block(block(title, false))
+        ProjectTab::Builds => {
+            let items: Vec<ListItem> = pv
+                .builds
+                .iter()
+                .map(|b| {
+                    let kind = if b.was_incremental { "incr" } else { "full" };
+                    ListItem::new(format!(
+                        "p:{} t:{} w:{} {:>4}ms ({kind})",
+                        b.podcast_count, b.timeline_count, b.total_words, b.duration_ms
+                    ))
+                })
+                .collect();
+            if items.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(Text::from(vec![Line::from(
+                        "No builds yet. Run the build command.",
+                    )]))
+                    .block(block("Build History", false))
                     .wrap(Wrap { trim: false }),
-                list_area,
-            );
+                    list_area,
+                );
+            } else {
+                let list = List::new(items)
+                    .block(block("Build History", false))
+                    .highlight_style(Style::new().bold())
+                    .highlight_symbol("▸ ");
+                frame.render_stateful_widget(list, list_area, &mut pv.builds_state);
+            }
+        }
+        ProjectTab::Deployments => {
+            let items: Vec<ListItem> = pv
+                .deploys
+                .iter()
+                .map(|d| {
+                    let status = if d.success { "OK" } else { "FAIL" };
+                    let date = d.deployed_at.get(..19).unwrap_or(&d.deployed_at);
+                    ListItem::new(format!("{}  {:.8}  {status}", date, d.deployment_id))
+                })
+                .collect();
+            if items.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(Text::from(vec![Line::from(
+                        "No deployments yet. Run the deploy command.",
+                    )]))
+                    .block(block("Deployment History", false))
+                    .wrap(Wrap { trim: false }),
+                    list_area,
+                );
+            } else {
+                let list = List::new(items)
+                    .block(block("Deployment History", false))
+                    .highlight_style(Style::new().bold())
+                    .highlight_symbol("▸ ");
+                frame.render_stateful_widget(list, list_area, &mut pv.deploys_state);
+            }
         }
     }
-}
-
-fn render_history_content(frame: &mut Frame, area: Rect, app: &mut AppState) {
-    let titles: Vec<Line> = vec!["Builds", "Deployments"]
-        .into_iter()
-        .map(Line::from)
-        .collect();
-    let tabs = Tabs::new(titles)
-        .block(block(" History ", true))
-        .select(if app.history.show_deploys { 1 } else { 0 })
-        .highlight_style(Style::new().bold().fg(Color::Cyan));
-
-    let [tabs_area, list_area] =
-        Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(area);
-    frame.render_widget(tabs, tabs_area);
-
-    let items: Vec<ListItem> = if app.history.show_deploys {
-        app.history
-            .deploys
-            .iter()
-            .map(|(proj, d)| {
-                let status = if d.success { "OK" } else { "FAIL" };
-                let date = d.deployed_at.get(..19).unwrap_or(&d.deployed_at);
-                ListItem::new(Line::from(vec![
-                    Span::raw(format!("{}  {}  {:.8} ", date, proj, d.deployment_id)),
-                    Span::styled(
-                        status,
-                        if d.success {
-                            Style::new().fg(Color::Cyan)
-                        } else {
-                            Style::new().fg(Color::Red)
-                        },
-                    ),
-                ]))
-            })
-            .collect()
-    } else {
-        app.history
-            .builds
-            .iter()
-            .map(|(proj, b)| {
-                let kind = if b.was_incremental { "incr" } else { "full" };
-                let date = b.built_at.get(..19).unwrap_or(&b.built_at);
-                ListItem::new(Line::from(vec![
-                    Span::raw(format!(
-                        "{}  {}  p:{} t:{} w:{} {:>4}ms ",
-                        date, proj, b.podcast_count, b.timeline_count, b.total_words, b.duration_ms
-                    )),
-                    Span::styled(kind, Style::new()),
-                ]))
-            })
-            .collect()
-    };
-
-    let list = List::new(items)
-        .block(block("Entries", false))
-        .highlight_style(Style::new().bold())
-        .highlight_symbol("▸ ");
-    frame.render_stateful_widget(list, list_area, &mut app.history.list_state);
 }
 
 // --- Utilities & Execution ---
@@ -1358,8 +1493,9 @@ async fn exec_build(root: Option<PathBuf>, raw: String) {
         }
     };
     let force = raw.split_whitespace().any(|w| w == "--force");
-    if let Err(e) = compiler::compile(&ctx, force).await {
-        error!("Build failed: {e}");
+    match compiler::compile(&ctx, force).await {
+        Ok(outcome) => outcome.emit(),
+        Err(e) => error!("Build failed: {e}"),
     }
 }
 

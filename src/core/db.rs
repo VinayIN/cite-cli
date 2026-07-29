@@ -38,7 +38,7 @@ impl DbManager {
             "
             CREATE TABLE IF NOT EXISTS _schema_version (
                 version INTEGER PRIMARY KEY,
-                applied_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                applied_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', CURRENT_TIMESTAMP))
             );
 
             CREATE TABLE IF NOT EXISTS projects (
@@ -53,7 +53,7 @@ impl DbManager {
 
             CREATE TABLE IF NOT EXISTS podcasts (
                 id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                project_id TEXT NOT NULL,
                 title TEXT NOT NULL DEFAULT '',
                 file TEXT NOT NULL DEFAULT '',
                 source_url TEXT,
@@ -68,7 +68,7 @@ impl DbManager {
 
             CREATE TABLE IF NOT EXISTS timeline_entries (
                 id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                project_id TEXT NOT NULL,
                 podcast_id TEXT NOT NULL,
                 date TEXT,
                 title TEXT NOT NULL DEFAULT '',
@@ -78,8 +78,8 @@ impl DbManager {
             );
 
             CREATE TABLE IF NOT EXISTS build_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
                 compiler_version REAL NOT NULL,
                 built_at TEXT NOT NULL,
                 podcast_count INTEGER DEFAULT 0,
@@ -90,8 +90,8 @@ impl DbManager {
             );
 
             CREATE TABLE IF NOT EXISTS deployment_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
                 deployment_id TEXT NOT NULL,
                 deployed_at TEXT NOT NULL,
                 storage_path TEXT DEFAULT '',
@@ -104,7 +104,7 @@ impl DbManager {
 
             CREATE TABLE IF NOT EXISTS file_cache (
                 file_path TEXT NOT NULL,
-                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                project_id TEXT NOT NULL,
                 sha256 TEXT NOT NULL DEFAULT '',
                 last_modified TEXT,
                 PRIMARY KEY (file_path, project_id)
@@ -135,7 +135,7 @@ impl DbManager {
     fn project_ensure(&self, project_id: &str, name: &str) -> Result<(), CiteError> {
         self.conn.execute(
             "INSERT OR IGNORE INTO projects (id, name, root_path, last_synced)
-             VALUES (?1, ?2, '', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+             VALUES (?1, ?2, '', strftime('%Y-%m-%dT%H:%M:%fZ', CURRENT_TIMESTAMP))",
             params![project_id, name],
         )?;
         Ok(())
@@ -144,7 +144,7 @@ impl DbManager {
     fn project_update_sync(&self, project_id: &str, ctx: &ProjectContext) -> Result<(), CiteError> {
         self.conn.execute(
             "UPDATE projects SET name = ?1, root_path = ?2, language = ?3, artist_id = ?4,
-                    metadata_file = ?5, last_synced = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    metadata_file = ?5, last_synced = strftime('%Y-%m-%dT%H:%M:%fZ', CURRENT_TIMESTAMP)
              WHERE id = ?6",
             params![
                 ctx.manifest.project.name,
@@ -314,11 +314,13 @@ impl DbManager {
         was_incremental: bool,
     ) -> Result<(), CiteError> {
         let now = chrono::Utc::now().to_rfc3339();
+        let id = uuid::Uuid::new_v4().to_string();
         self.conn.execute(
             "INSERT INTO build_history
-                    (project_id, compiler_version, built_at, podcast_count, timeline_count, total_words, duration_ms, was_incremental)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    (id, project_id, compiler_version, built_at, podcast_count, timeline_count, total_words, duration_ms, was_incremental)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
+                id,
                 project_id,
                 compiler_version,
                 now,
@@ -347,11 +349,13 @@ impl DbManager {
         dry_run: bool,
     ) -> Result<(), CiteError> {
         let now = chrono::Utc::now().to_rfc3339();
+        let id = uuid::Uuid::new_v4().to_string();
         self.conn.execute(
             "INSERT INTO deployment_history
-                    (project_id, deployment_id, deployed_at, storage_path, news_count, timeline_count, asset_count, success, dry_run)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    (id, project_id, deployment_id, deployed_at, storage_path, news_count, timeline_count, asset_count, success, dry_run)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
+                id,
                 project_id,
                 deployment_id,
                 now,
@@ -367,25 +371,6 @@ impl DbManager {
     }
 
     // ── Browse / List ──
-
-    pub fn list_projects(&self) -> Result<Vec<super::project::StoredProject>, CiteError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.name FROM projects p ORDER BY p.last_synced DESC",
-        )?;
-
-        let rows = stmt.query_map([], |row| {
-            Ok(super::project::StoredProject {
-                id: row.get(0)?,
-                name: row.get(1)?,
-            })
-        })?;
-
-        let mut projects = Vec::new();
-        for row in rows {
-            projects.push(row?);
-        }
-        Ok(projects)
-    }
 
     pub fn get_podcasts_with_content(
         &self,
@@ -459,7 +444,7 @@ impl DbManager {
         project_id: &str,
     ) -> Result<Vec<super::project::StoredBuild>, CiteError> {
         let mut stmt = self.conn.prepare(
-            "SELECT built_at, podcast_count, timeline_count, total_words, duration_ms, was_incremental
+            "SELECT podcast_count, timeline_count, total_words, duration_ms, was_incremental
              FROM build_history WHERE project_id = ?1
              ORDER BY built_at DESC
              LIMIT 50",
@@ -467,12 +452,11 @@ impl DbManager {
 
         let rows = stmt.query_map(params![project_id], |row| {
             Ok(super::project::StoredBuild {
-                built_at: row.get(0)?,
-                podcast_count: row.get(1)?,
-                timeline_count: row.get(2)?,
-                total_words: row.get(3)?,
-                duration_ms: row.get(4)?,
-                was_incremental: row.get::<_, i64>(5)? != 0,
+                podcast_count: row.get(0)?,
+                timeline_count: row.get(1)?,
+                total_words: row.get(2)?,
+                duration_ms: row.get(3)?,
+                was_incremental: row.get::<_, i64>(4)? != 0,
             })
         })?;
 
@@ -553,7 +537,7 @@ impl DbManager {
             .ok();
 
         let mut stmt = self.conn.prepare(
-            "SELECT strftime('%Y-%m', built_at) AS month, COUNT(*)
+            "SELECT strftime('%Y-%m', built_at::TIMESTAMP) AS month, COUNT(*)
              FROM build_history WHERE project_id = ?1 AND built_at IS NOT NULL
              GROUP BY month ORDER BY month DESC LIMIT 12",
         )?;
@@ -661,3 +645,58 @@ fn read_content_file(path: &Path) -> Option<String> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_migration_and_queries() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = DbManager::open_path(&db_path).unwrap();
+
+        // Insert test data
+        db.conn.execute_batch("
+            INSERT INTO projects (id, name) VALUES ('proj1', 'Test Project');
+            INSERT INTO podcasts (id, project_id, title, file, word_count)
+                VALUES ('p1', 'proj1', 'Test Podcast', 'test.md', 100);
+            INSERT INTO timeline_entries (id, project_id, podcast_id, date, title)
+                VALUES ('t1', 'proj1', 'p1', '2005-03', 'Test Entry');
+            INSERT INTO build_history (id, project_id, compiler_version, built_at, podcast_count, timeline_count, total_words, duration_ms, was_incremental)
+                VALUES ('b1', 'proj1', 1.0, '2026-07-29T15:00:00.000Z', 1, 1, 100, 50, 0);
+        ").unwrap();
+
+        // Test get_project_stats
+        let stats = db.get_project_stats("proj1").unwrap();
+        assert_eq!(stats.podcast_count, 1);
+        assert_eq!(stats.timeline_count, 1);
+        assert_eq!(stats.total_words, 100);
+        assert_eq!(stats.build_count, 1);
+        assert_eq!(stats.deployment_count, 0);
+        assert!(stats.last_built.is_some());
+
+        // Test get_all_stats
+        let all = db.get_all_stats().unwrap();
+        assert_eq!(all.project_count, 1);
+        assert_eq!(all.total_podcasts, 1);
+        assert_eq!(all.total_timelines, 1);
+        assert_eq!(all.total_words, 100);
+        assert_eq!(all.total_builds, 1);
+
+        // Test get_podcasts_with_content
+        let pods = db.get_podcasts_with_content("proj1").unwrap();
+        assert_eq!(pods.len(), 1);
+        assert_eq!(pods[0].title, "Test Podcast");
+
+        // Test get_timelines
+        let timelines = db.get_timelines("proj1").unwrap();
+        assert_eq!(timelines.len(), 1);
+
+        // Test get_build_history
+        let builds = db.get_build_history("proj1").unwrap();
+        assert_eq!(builds.len(), 1);
+    }
+}
+
+

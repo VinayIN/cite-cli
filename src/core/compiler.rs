@@ -146,12 +146,10 @@ pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileOutcome
         was_incremental,
     };
 
-    let result = CompileOutcome::Complete {
+    Ok(CompileOutcome::Complete {
         artifact: build_dir.join("content.json"),
         stats,
-    };
-    result.emit();
-    Ok(result)
+    })
 }
 
 async fn build_bundle(

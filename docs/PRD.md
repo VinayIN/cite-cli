@@ -429,7 +429,6 @@ Modes:
 * Main View
 * Analytics View
 * Explorer View
-* History View
 
 ---
 
@@ -496,29 +495,12 @@ The Content pane displays:
 * overview (project name, artist, podcast count)
 * podcasts (list with titles and metadata)
 * timelines (timeline entries)
-* builds (build history summary)
-* deployments (deployment history summary)
+* builds (build history)
+* deployments (deployment history)
 
 Navigation:
 
 * ↑/↓/←/→ Navigate
-* Tab switch panels
-* r refresh
-* Esc return
-
----
-
-## History View (`h`)
-
-Three-panel layout:
-
-* Project (list)
-* Build history
-* Deployment history
-
-Navigation:
-
-* ↑/↓ Navigate between projects
 * Tab switch panels
 * r refresh
 * Esc return
@@ -532,7 +514,6 @@ Navigation:
 | m   | Main      |
 | s   | Analytics |
 | e   | Explorer  |
-| h   | History   |
 | q   | Quit      |
 
 Long-running tasks (build, deploy) execute asynchronously with live progress updates in the Logs panel.

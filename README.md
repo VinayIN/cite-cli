@@ -41,7 +41,6 @@ Run `cite-cli` with no arguments to enter the TUI:
 | `m` | Main — projects, commands, logs |
 | `s` | Analytics — project statistics and history |
 | `e` | Explorer — podcasts, timelines, builds, deployments |
-| `h` | History — build and deployment timelines |
 
 > Navigation: `Tab`/`Shift+Tab` (panels), `↑`/`↓` (lists), `Enter` (execute/select), `r` (refresh), `Esc` (exit).
 

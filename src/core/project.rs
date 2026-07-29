@@ -5,13 +5,6 @@ use crate::core::manifest::Manifest;
 use crate::core::metadata::Metadata;
 use tracing::info;
 
-/// A stored project entry from the global DuckDB
-#[derive(Debug, Clone)]
-pub struct StoredProject {
-    pub id: String,
-    pub name: String,
-}
-
 /// A podcast record from the DB (with content)
 #[derive(Debug, Clone)]
 pub struct StoredPodcast {
@@ -37,7 +30,6 @@ pub struct StoredDeployment {
 /// A build record from the DB
 #[derive(Debug, Clone)]
 pub struct StoredBuild {
-    pub built_at: String,
     pub podcast_count: i64,
     pub timeline_count: i64,
     pub total_words: i64,
