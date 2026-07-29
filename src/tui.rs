@@ -19,8 +19,7 @@ use tracing::{error, info, warn};
 use crate::core::CiteError;
 use crate::core::db::DbManager;
 use crate::core::project::{
-    self, AllStats, ProjectContext, ProjectStats, StoredBuild, StoredDeployment,
-    StoredTimeline,
+    self, AllStats, ProjectContext, ProjectStats, StoredBuild, StoredDeployment, StoredTimeline,
 };
 use crate::core::{compiler, deploy, doctor, scaffold};
 
@@ -136,6 +135,14 @@ pub enum ProjectTab {
     Deployments,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum ProjectListItemType {
+    LocalHeader,
+    ArchivedHeader,
+    LocalProject(usize),
+    ArchivedProject,
+}
+
 pub struct AnalyticsState {
     pub projects_state: ListState,
     pub stats: Option<ProjectStats>,
@@ -169,6 +176,7 @@ struct EditorPick {
 pub struct AppState {
     cwd: PathBuf,
     pub roots: Vec<PathBuf>,
+    pub db_projects: Vec<(String, String)>,
     pub projects_state: ListState,
 
     pub focus: Focus,
@@ -190,14 +198,19 @@ pub struct AppState {
     analytics: AnalyticsState,
     project_view: ProjectViewState,
     command_palette: CommandPaletteState,
+
+    local_expanded: bool,
+    archived_expanded: bool,
 }
 
 impl AppState {
-    pub fn new(cwd: &Path) -> Self {
+    pub async fn new(cwd: &Path) -> Self {
         let (tx, rx) = mpsc::channel(32);
         let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
         let mut roots = project::discover_projects(&cwd);
         roots.sort();
+
+        let db_projects = Self::load_db_projects().await;
 
         let mut projects_state = ListState::default();
         if !roots.is_empty() {
@@ -210,6 +223,7 @@ impl AppState {
         Self {
             cwd: cwd.to_path_buf(),
             roots,
+            db_projects,
             projects_state,
             focus: Focus::Commands,
             cmds_state,
@@ -245,21 +259,40 @@ impl AppState {
                 search: String::new(),
                 list_state: ListState::default(),
             },
+            local_expanded: true,
+            archived_expanded: true,
         }
     }
 
-    fn refresh_projects(&mut self) {
+    async fn load_db_projects() -> Vec<(String, String)> {
+        if let Ok(db) = DbManager::open().await {
+            db.list_db_projects().await.unwrap_or_default()
+        } else {
+            vec![]
+        }
+    }
+
+    async fn refresh_projects(&mut self) {
         self.roots = project::discover_projects(&self.cwd);
         if let Some(sel) = self.projects_state.selected() {
             self.projects_state
                 .select(Some(sel.min(self.roots.len().saturating_sub(1))));
         }
+        self.db_projects = Self::load_db_projects().await;
     }
 
     fn selected_root(&self) -> Option<PathBuf> {
-        self.projects_state
-            .selected()
-            .and_then(|i| self.roots.get(i).cloned())
+        let sel = self.projects_state.selected()?;
+        match project_item_type_at(
+            sel,
+            &self.roots,
+            &self.db_projects,
+            self.local_expanded,
+            self.archived_expanded,
+        ) {
+            ProjectListItemType::LocalProject(i) => self.roots.get(i).cloned(),
+            _ => None,
+        }
     }
 
     fn focus_order(&self) -> Vec<Focus> {
@@ -286,20 +319,20 @@ impl AppState {
             .collect()
     }
 
-    fn load_analytics_data(&mut self) {
+    async fn load_analytics_data(&mut self) {
         let sel = self.analytics.projects_state.selected().unwrap_or(0);
         if let Some(root) = self.roots.get(sel) {
             let project_id = root.to_string_lossy().to_string();
-            if let Ok(db) = DbManager::open() {
-                self.analytics.stats = db.get_project_stats(&project_id).ok();
+            if let Ok(db) = DbManager::open().await {
+                self.analytics.stats = db.get_project_stats(&project_id).await.ok();
             }
         }
-        if let Ok(db) = DbManager::open() {
-            self.analytics.global = db.get_all_stats().ok();
+        if let Ok(db) = DbManager::open().await {
+            self.analytics.global = db.get_all_stats().await.ok();
         }
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) {
+    pub async fn handle_key(&mut self, key: KeyEvent) {
         if (key.code == KeyCode::Char('p') || key.code == KeyCode::Char('P'))
             && (key.modifiers.contains(KeyModifiers::SUPER)
                 || key.modifiers.contains(KeyModifiers::CONTROL))
@@ -315,14 +348,14 @@ impl AppState {
         }
 
         match self.mode {
-            TuiMode::Runner => self.handle_runner_key(key),
-            TuiMode::Analytics => self.handle_analytics_key(key),
-            TuiMode::ProjectView => self.handle_project_view_key(key),
+            TuiMode::Runner => self.handle_runner_key(key).await,
+            TuiMode::Analytics => self.handle_analytics_key(key).await,
+            TuiMode::ProjectView => self.handle_project_view_key(key).await,
             TuiMode::CommandPalette => self.handle_command_palette_key(key),
         }
     }
 
-    fn enter_analytics(&mut self) {
+    async fn enter_analytics(&mut self) {
         let mut projects_state = ListState::default();
         if !self.roots.is_empty() {
             projects_state.select(Some(0));
@@ -332,12 +365,12 @@ impl AppState {
             stats: None,
             global: None,
         };
-        self.load_analytics_data();
+        self.load_analytics_data().await;
         self.mode = TuiMode::Analytics;
         self.focus = Focus::Projects;
     }
 
-    fn enter_project_view(&mut self) {
+    async fn enter_project_view(&mut self) {
         let mut projects_state = ListState::default();
         if !self.roots.is_empty() {
             projects_state.select(Some(0));
@@ -357,13 +390,13 @@ impl AppState {
             sel_tab: ProjectTab::Overview,
         };
 
-        state.load_selected(&self.roots);
+        state.load_selected(&self.roots).await;
         self.project_view = state;
         self.mode = TuiMode::ProjectView;
         self.focus = Focus::Projects;
     }
 
-    fn handle_runner_key(&mut self, key: KeyEvent) {
+    async fn handle_runner_key(&mut self, key: KeyEvent) {
         if self.editor_pick.is_some() {
             self.handle_pick_key(key);
             return;
@@ -371,13 +404,13 @@ impl AppState {
 
         match key.code {
             KeyCode::Char('m') => self.mode = TuiMode::Runner,
-            KeyCode::Char('s') => self.enter_analytics(),
-            KeyCode::Char('e') => self.enter_project_view(),
-            _ => self.handle_runner_nav(key),
+            KeyCode::Char('s') => self.enter_analytics().await,
+            KeyCode::Char('e') => self.enter_project_view().await,
+            _ => self.handle_runner_nav(key).await,
         }
     }
 
-    fn handle_runner_nav(&mut self, key: KeyEvent) {
+    async fn handle_runner_nav(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {
                 if self.busy {
@@ -403,17 +436,54 @@ impl AppState {
                 _ => {}
             },
             KeyCode::Left => match self.focus {
-                Focus::Commands if !self.busy => self.cmds_state.select_previous(),
+                Focus::Commands if !self.busy => {
+                    let sel = self.cmds_state.selected().unwrap_or(0);
+                    if sel > 0 {
+                        self.cmds_state.select(Some(sel - 1));
+                    }
+                }
                 _ => {}
             },
             KeyCode::Right => match self.focus {
-                Focus::Commands if !self.busy => self.cmds_state.select_next(),
+                Focus::Commands if !self.busy => {
+                    let sel = self.cmds_state.selected().unwrap_or(0);
+                    if sel + 1 < CMDS.len() {
+                        self.cmds_state.select(Some(sel + 1));
+                    }
+                }
                 _ => {}
             },
             KeyCode::Enter => {
                 if !self.busy {
                     match self.focus {
-                        Focus::Projects => self.open_edit_picker(),
+                        Focus::Projects => {
+                            let Some(sel) = self.projects_state.selected() else {
+                                return;
+                            };
+                            let item_type = project_item_type_at(
+                                sel,
+                                &self.roots,
+                                &self.db_projects,
+                                self.local_expanded,
+                                self.archived_expanded,
+                            );
+                            match item_type {
+                                ProjectListItemType::LocalHeader => {
+                                    self.local_expanded = !self.local_expanded;
+                                    self.projects_state.select(Some(0));
+                                }
+                                ProjectListItemType::ArchivedHeader => {
+                                    self.archived_expanded = !self.archived_expanded;
+                                    let idx =
+                                        archived_header_index(&self.roots, self.local_expanded);
+                                    self.projects_state.select(Some(idx));
+                                }
+                                ProjectListItemType::LocalProject(_) => {
+                                    self.open_edit_picker();
+                                }
+                                ProjectListItemType::ArchivedProject => {}
+                            }
+                        }
                         Focus::Commands | Focus::Details => self.start_cmd(),
                         _ => {}
                     }
@@ -426,7 +496,7 @@ impl AppState {
             }
             KeyCode::Char('r') if !matches!(self.focus, Focus::Details) => {
                 if !self.busy {
-                    self.refresh_projects();
+                    self.refresh_projects().await;
                     self.log.clear();
                     self.scroll = 0;
                     info!(">> Refreshed");
@@ -447,7 +517,7 @@ impl AppState {
         }
     }
 
-    fn handle_analytics_key(&mut self, key: KeyEvent) {
+    async fn handle_analytics_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('m') => {
                 self.mode = TuiMode::Runner;
@@ -463,26 +533,26 @@ impl AppState {
             KeyCode::Up => {
                 if self.focus == Focus::Projects {
                     self.analytics.projects_state.select_previous();
-                    self.load_analytics_data();
+                    self.load_analytics_data().await;
                 }
             }
             KeyCode::Down => {
                 if self.focus == Focus::Projects {
                     self.analytics.projects_state.select_next();
-                    self.load_analytics_data();
+                    self.load_analytics_data().await;
                 }
             }
             KeyCode::Char('r') => {
                 self.analytics.stats = None;
                 self.analytics.global = None;
-                self.load_analytics_data();
+                self.load_analytics_data().await;
                 info!(">> Analytics refreshed");
             }
             _ => {}
         }
     }
 
-    fn handle_project_view_key(&mut self, key: KeyEvent) {
+    async fn handle_project_view_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('m') => {
                 self.mode = TuiMode::Runner;
@@ -495,24 +565,28 @@ impl AppState {
                     Focus::Projects
                 };
             }
-                KeyCode::Up => {
+            KeyCode::Up => {
                 if self.focus == Focus::Projects {
                     self.project_view.projects_state.select_previous();
-                    self.project_view.load_selected(&self.roots);
+                    self.project_view.load_selected(&self.roots).await;
                 } else if self.focus == Focus::Details {
                     match self.project_view.sel_tab {
                         ProjectTab::Podcasts => self.project_view.podcasts_state.select_previous(),
-                        ProjectTab::Timelines => self.project_view.timelines_state.select_previous(),
+                        ProjectTab::Timelines => {
+                            self.project_view.timelines_state.select_previous()
+                        }
                         ProjectTab::Builds => self.project_view.builds_state.select_previous(),
-                        ProjectTab::Deployments => self.project_view.deploys_state.select_previous(),
+                        ProjectTab::Deployments => {
+                            self.project_view.deploys_state.select_previous()
+                        }
                         _ => {}
                     }
                 }
             }
-                KeyCode::Down => {
+            KeyCode::Down => {
                 if self.focus == Focus::Projects {
                     self.project_view.projects_state.select_next();
-                    self.project_view.load_selected(&self.roots);
+                    self.project_view.load_selected(&self.roots).await;
                 } else if self.focus == Focus::Details {
                     match self.project_view.sel_tab {
                         ProjectTab::Podcasts => self.project_view.podcasts_state.select_next(),
@@ -544,7 +618,7 @@ impl AppState {
                     self.project_view.sel_tab = tabs[new_idx];
                 }
             }
-            KeyCode::Char('r') => self.project_view.load_selected(&self.roots),
+            KeyCode::Char('r') => self.project_view.load_selected(&self.roots).await,
             _ => {}
         }
     }
@@ -660,16 +734,28 @@ impl AppState {
 }
 
 impl ProjectViewState {
-    fn load_selected(&mut self, roots: &[PathBuf]) {
+    async fn load_selected(&mut self, roots: &[PathBuf]) {
         let sel = self.projects_state.selected().unwrap_or(0);
         if let Some(root) = roots.get(sel) {
             let project_id = root.to_string_lossy().to_string();
-            if let Ok(db) = DbManager::open() {
-                self.project_stats = db.get_project_stats(&project_id).ok();
-                self.podcasts = db.get_podcasts_with_content(&project_id).ok().unwrap_or_default();
-                self.timelines = db.get_timelines(&project_id).ok().unwrap_or_default();
-                self.builds = db.get_build_history(&project_id).ok().unwrap_or_default();
-                self.deploys = db.get_deployment_history(&project_id).ok().unwrap_or_default();
+            if let Ok(db) = DbManager::open().await {
+                self.project_stats = db.get_project_stats(&project_id).await.ok();
+                self.podcasts = db
+                    .get_podcasts_with_content(&project_id)
+                    .await
+                    .ok()
+                    .unwrap_or_default();
+                self.timelines = db.get_timelines(&project_id).await.ok().unwrap_or_default();
+                self.builds = db
+                    .get_build_history(&project_id)
+                    .await
+                    .ok()
+                    .unwrap_or_default();
+                self.deploys = db
+                    .get_deployment_history(&project_id)
+                    .await
+                    .ok()
+                    .unwrap_or_default();
             }
         }
     }
@@ -699,14 +785,17 @@ fn color_log_line(l: &str) -> Line<'static> {
     }
 }
 
-pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>, cli_root: PathBuf) -> Result<(), CiteError> {
+pub async fn run_tui(
+    mut log_rx: mpsc::UnboundedReceiver<String>,
+    cli_root: PathBuf,
+) -> Result<(), CiteError> {
     let mut terminal = ratatui::init();
     let _guard = TerminalGuard;
     terminal
         .clear()
         .map_err(|e| CiteError::Config(format!("{e}")))?;
 
-    let mut app = AppState::new(&cli_root);
+    let mut app = AppState::new(&cli_root).await;
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
@@ -731,7 +820,7 @@ pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>, cli_root: Path
 
         tokio::select! {
             biased;
-            Some(()) = app.rx.recv() => { app.busy = false; app.task = None; app.refresh_projects(); }
+            Some(()) = app.rx.recv() => { app.busy = false; app.task = None; app.refresh_projects().await; }
             Some(line) = log_rx.recv() => {
                 let was_at_bottom = app.scroll >= app.log.len().saturating_sub(1);
                 app.log.push(line);
@@ -742,7 +831,7 @@ pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>, cli_root: Path
                     && key.kind == KeyEventKind::Press {
                         if (key.code == KeyCode::Char('q') && key.modifiers.is_empty() && app.mode == TuiMode::Runner)
                             || (key.code == KeyCode::Esc && app.mode == TuiMode::Runner && app.editor_pick.is_none()) { break; }
-                        app.handle_key(key);
+                        app.handle_key(key).await;
 
                         if let Some(path) = app.pending_edit.take() {
                             edit_file(&mut terminal, &mut app, &path).await.map_err(|e| CiteError::Config(format!("{e}")))?;
@@ -814,12 +903,20 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut AppState) {
             let [left, right] =
                 Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)])
                     .areas(area);
-            render_projects_runner(frame, left, app);
+            render_categorized_project_list(
+                frame,
+                left,
+                &app.roots,
+                &app.db_projects,
+                app.local_expanded,
+                app.archived_expanded,
+                &app.focus,
+                &mut app.projects_state,
+            );
             let [content_area, logs_area] =
                 Layout::vertical([Constraint::Fill(1), Constraint::Percentage(35)]).areas(right);
             let [cmd_tabs_area, details_area] =
-                Layout::vertical([Constraint::Length(3), Constraint::Fill(1)])
-                    .areas(content_area);
+                Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(content_area);
             render_cmd_tabs(frame, cmd_tabs_area, app);
             render_cmd_doc(frame, details_area, app);
             render_log(frame, logs_area, app);
@@ -828,62 +925,208 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut AppState) {
             let [left, right] =
                 Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
                     .areas(area);
-            render_projects_analytics(frame, left, app);
+            render_simple_project_list(
+                frame,
+                left,
+                &app.roots,
+                &app.focus,
+                &mut app.analytics.projects_state,
+            );
             render_analytics_content(frame, right, app);
         }
         TuiMode::ProjectView => {
             let [left, right] =
                 Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
                     .areas(area);
-            render_projects_explorer(frame, left, app);
+            render_simple_project_list(
+                frame,
+                left,
+                &app.roots,
+                &app.focus,
+                &mut app.project_view.projects_state,
+            );
             render_explorer_content(frame, right, app);
         }
     }
 }
 
-fn render_projects_runner(frame: &mut Frame, area: Rect, app: &mut AppState) {
-    let is_focused = matches!(app.focus, Focus::Projects);
-    let items: Vec<ListItem> = app
-        .roots
+fn compute_archived<'a>(roots: &[PathBuf], db_projects: &'a [(String, String)]) -> Vec<&'a str> {
+    db_projects
         .iter()
-        .map(|root| ListItem::new(root.file_name().and_then(|n| n.to_str()).unwrap_or("?")))
-        .collect();
-
-    let list = List::new(items)
-        .block(block(" Projects ", is_focused))
-        .highlight_style(Style::new().bold())
-        .highlight_symbol("▸ ");
-    frame.render_stateful_widget(list, area, &mut app.projects_state);
+        .filter(|(name, id)| {
+            !roots.iter().any(|r| {
+                r.to_string_lossy().as_ref() == id.as_str()
+                    || r.file_name().and_then(|n| n.to_str()) == Some(name.as_str())
+            })
+        })
+        .map(|(name, _)| name.as_str())
+        .collect()
 }
 
-fn render_projects_analytics(frame: &mut Frame, area: Rect, app: &mut AppState) {
-    let is_focused = matches!(app.focus, Focus::Projects);
-    let items: Vec<ListItem> = app
-        .roots
-        .iter()
-        .map(|root| ListItem::new(root.file_name().and_then(|n| n.to_str()).unwrap_or("?")))
-        .collect();
+fn project_item_type_at(
+    sel: usize,
+    roots: &[PathBuf],
+    db_projects: &[(String, String)],
+    local_expanded: bool,
+    archived_expanded: bool,
+) -> ProjectListItemType {
+    if sel == 0 {
+        return ProjectListItemType::LocalHeader;
+    }
 
-    let list = List::new(items)
-        .block(block(" Projects ", is_focused))
-        .highlight_style(Style::new().bold())
-        .highlight_symbol("▸ ");
-    frame.render_stateful_widget(list, area, &mut app.analytics.projects_state);
+    let mut cursor = 1;
+
+    if local_expanded {
+        if roots.is_empty() {
+            if sel == cursor {
+                return ProjectListItemType::ArchivedProject;
+            }
+            cursor += 1;
+        } else {
+            let n = roots.len();
+            if sel < cursor + n {
+                return ProjectListItemType::LocalProject(sel - cursor);
+            }
+            cursor += n;
+        }
+    }
+
+    if sel == cursor {
+        return ProjectListItemType::ArchivedHeader;
+    }
+    cursor += 1;
+
+    if archived_expanded {
+        let archived = compute_archived(roots, db_projects);
+        if archived.is_empty() {
+            if sel == cursor {
+                return ProjectListItemType::ArchivedProject;
+            }
+        } else if sel < cursor + archived.len() {
+            return ProjectListItemType::ArchivedProject;
+        }
+    }
+
+    ProjectListItemType::ArchivedProject
 }
 
-fn render_projects_explorer(frame: &mut Frame, area: Rect, app: &mut AppState) {
-    let is_focused = matches!(app.focus, Focus::Projects);
-    let items: Vec<ListItem> = app
-        .roots
-        .iter()
-        .map(|root| ListItem::new(root.file_name().and_then(|n| n.to_str()).unwrap_or("?")))
-        .collect();
+fn archived_header_index(roots: &[PathBuf], local_expanded: bool) -> usize {
+    let mut idx = 1;
+    if local_expanded {
+        idx += if roots.is_empty() { 1 } else { roots.len() };
+    }
+    idx
+}
+
+fn render_categorized_project_list(
+    frame: &mut Frame,
+    area: Rect,
+    roots: &[PathBuf],
+    db_projects: &[(String, String)],
+    local_expanded: bool,
+    archived_expanded: bool,
+    focus: &Focus,
+    state: &mut ListState,
+) {
+    let is_focused = matches!(focus, Focus::Projects);
+
+    let header_style = Style::new()
+        .fg(if is_focused {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        })
+        .add_modifier(Modifier::BOLD);
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    let local_indicator = if local_expanded { "▼" } else { "▶" };
+    items.push(ListItem::new(Line::from(Span::styled(
+        format!(" {} Local", local_indicator),
+        header_style,
+    ))));
+    if local_expanded {
+        if roots.is_empty() {
+            items.push(ListItem::new("  (none)"));
+        } else {
+            for root in roots {
+                let name = root.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                items.push(ListItem::new(format!("  {}  ", name)));
+            }
+        }
+    }
+
+    let archived_indicator = if archived_expanded { "▼" } else { "▶" };
+    items.push(ListItem::new(Line::from(Span::styled(
+        format!(" {} Archived", archived_indicator),
+        header_style,
+    ))));
+    if archived_expanded {
+        let archived_names = compute_archived(roots, db_projects);
+        if archived_names.is_empty() {
+            items.push(ListItem::new("  (none)"));
+        } else {
+            for name in archived_names {
+                items.push(ListItem::new(format!("  {}  ", name)));
+            }
+        }
+    }
+
+    if let Some(sel) = state.selected() {
+        if sel >= items.len() {
+            if items.is_empty() {
+                state.select(None);
+            } else {
+                state.select(Some(items.len().saturating_sub(1)));
+            }
+        }
+    } else if !items.is_empty() {
+        state.select(Some(0));
+    }
 
     let list = List::new(items)
         .block(block(" Projects ", is_focused))
         .highlight_style(Style::new().bold())
         .highlight_symbol("▸ ");
-    frame.render_stateful_widget(list, area, &mut app.project_view.projects_state);
+    frame.render_stateful_widget(list, area, state);
+}
+
+fn render_simple_project_list(
+    frame: &mut Frame,
+    area: Rect,
+    roots: &[PathBuf],
+    focus: &Focus,
+    state: &mut ListState,
+) {
+    let is_focused = matches!(focus, Focus::Projects);
+
+    let mut items: Vec<ListItem> = Vec::new();
+    if roots.is_empty() {
+        items.push(ListItem::new("  (none)"));
+    } else {
+        for root in roots {
+            let name = root.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            items.push(ListItem::new(format!("  {}  ", name)));
+        }
+    }
+
+    if let Some(sel) = state.selected() {
+        if sel >= items.len() {
+            if items.is_empty() {
+                state.select(None);
+            } else {
+                state.select(Some(items.len().saturating_sub(1)));
+            }
+        }
+    } else if !items.is_empty() {
+        state.select(Some(0));
+    }
+
+    let list = List::new(items)
+        .block(block(" Projects ", is_focused))
+        .highlight_style(Style::new().bold())
+        .highlight_symbol("▸ ");
+    frame.render_stateful_widget(list, area, state);
 }
 
 fn render_cmd_tabs(frame: &mut Frame, area: Rect, app: &mut AppState) {
@@ -1137,7 +1380,10 @@ fn render_analytics_content(frame: &mut Frame, area: Rect, app: &AppState) {
         lines.push(Line::from(format!("Total Words:  {}", stats.total_words)));
 
         let reading_time = if stats.total_words > 0 {
-            format!("{} min (est.)", (stats.total_words as f64 / 200.0).ceil() as u64)
+            format!(
+                "{} min (est.)",
+                (stats.total_words as f64 / 200.0).ceil() as u64
+            )
         } else {
             "N/A".to_string()
         };
@@ -1166,7 +1412,10 @@ fn render_analytics_content(frame: &mut Frame, area: Rect, app: &AppState) {
         }
 
         if let Some(global) = &app.analytics.global {
-            lines.push(Line::from(format!("Total Assets: {}", global.total_podcasts)));
+            lines.push(Line::from(format!(
+                "Total Assets: {}",
+                global.total_podcasts
+            )));
         }
 
         // Podcasts by month
@@ -1227,14 +1476,16 @@ fn render_explorer_content(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let tabs_is_focused = matches!(app.focus, Focus::Details);
 
     let tabs = Tabs::new(titles)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" Project: {} ", project_name))
-            .border_style(if tabs_is_focused {
-                Style::new().fg(Color::Cyan)
-            } else {
-                Style::new()
-            }))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Project: {} ", project_name))
+                .border_style(if tabs_is_focused {
+                    Style::new().fg(Color::Cyan)
+                } else {
+                    Style::new()
+                }),
+        )
         .divider(symbols::DOT)
         .select(pv.sel_tab as usize)
         .highlight_style(Style::new().bold().fg(Color::Cyan));
@@ -1428,7 +1679,7 @@ async fn edit_file(
         }
         s => warn!("Editor exited with {s}"),
     }
-    app.refresh_projects();
+    app.refresh_projects().await;
     Ok(())
 }
 
@@ -1510,7 +1761,7 @@ async fn exec_status(root: Option<PathBuf>, _raw: String) {
             return;
         }
     };
-    project::print_status(&ctx);
+    project::print_status(&ctx).await;
 }
 
 async fn exec_doctor(root: Option<PathBuf>, _raw: String) {
@@ -1525,7 +1776,7 @@ async fn exec_doctor(root: Option<PathBuf>, _raw: String) {
             return;
         }
     };
-    match doctor::run(&ctx) {
+    match doctor::run(&ctx).await {
         Ok(o) => {
             if !o.has_errors() && !o.has_warnings() {
                 info!("Doctor check complete; no issues found");
@@ -1597,7 +1848,7 @@ async fn exec_clean(root: Option<PathBuf>, _raw: String) {
             return;
         }
     };
-    match ctx.clean() {
+    match ctx.clean().await {
         Ok(()) => info!("Cleaned build artifacts"),
         Err(e) => error!("Clean failed: {e}"),
     }

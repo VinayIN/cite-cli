@@ -36,17 +36,15 @@ impl Default for BuildConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-#[derive(Default)]
 pub struct BackendConfig {
     pub staging_url: Option<String>,
     pub staging_service_key: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-#[derive(Default)]
 pub struct Manifest {
     pub project: ProjectConfig,
     pub build: BuildConfig,

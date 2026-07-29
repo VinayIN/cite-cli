@@ -5,8 +5,8 @@ mod tui;
 use clap::Parser;
 use cli::Cli;
 use colored::Colorize;
-use std::path::PathBuf;
 use std::io::Write;
+use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -41,7 +41,10 @@ async fn main() {
             .with_level(true)
             .with_timer(FormattedTimestamp)
             .with_ansi(false)
-            .with_writer(move || LogWriter { tx: log_tx.clone(), buf: String::new() })
+            .with_writer(move || LogWriter {
+                tx: log_tx.clone(),
+                buf: String::new(),
+            })
             .init();
         info!("cite-cli v{}", env!("CARGO_PKG_VERSION"));
         let root = PathBuf::from(&cli.path);

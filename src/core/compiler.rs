@@ -12,7 +12,7 @@ use crate::core::metadata::{Podcast, TimelineEntry};
 use crate::core::project::ProjectContext;
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ContentBundle {
+struct ContentBundle {
     pub compiler_version: f64,
     pub project: String,
     pub artist_id: String,
@@ -21,7 +21,7 @@ pub struct ContentBundle {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct BundlePodcast {
+struct BundlePodcast {
     pub id: String,
     #[serde(flatten)]
     pub podcast: Podcast,
@@ -33,7 +33,7 @@ pub struct BundlePodcast {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct BundleTimeline {
+struct BundleTimeline {
     pub id: String,
     pub entries: Vec<TimelineEntry>,
 }
@@ -88,15 +88,16 @@ pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileOutcome
     let current_hashes = hash_files(&content_files).await?;
 
     if !force
-        && let Ok(db) = DbManager::open()
-            && let Ok(Some(cache)) = db.load_cache(&project_id)
-                && cache.compiler_version == ctx.manifest.build.compiler_version {
-                    let changed = cache.changed_since(&current_hashes);
-                    if changed.is_empty() {
-                        info!("Nothing to rebuild — all files up to date");
-                        return Ok(CompileOutcome::UpToDate);
-                    }
-                }
+        && let Ok(db) = DbManager::open().await
+        && let Ok(Some(cache)) = db.load_cache(&project_id).await
+        && cache.compiler_version == ctx.manifest.build.compiler_version
+    {
+        let changed = cache.changed_since(&current_hashes);
+        if changed.is_empty() {
+            info!("Nothing to rebuild — all files up to date");
+            return Ok(CompileOutcome::UpToDate);
+        }
+    }
 
     let mut uuid_cache = UuidCache::load(&ctx.root);
     let bundle = build_bundle(ctx, &mut uuid_cache).await?;
@@ -123,19 +124,21 @@ pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileOutcome
 
     let was_incremental = !force && bundle.podcasts.len() as i64 > 0;
 
-    if let Ok(db) = DbManager::open() {
+    if let Ok(db) = DbManager::open().await {
         let cv = ctx.manifest.build.compiler_version;
-        let _ = db.save_cache(&project_id, cv, &current_hashes);
-        let _ = db.sync_project(ctx);
-        let _ = db.record_build(
-            &project_id,
-            cv,
-            bundle.podcasts.len() as i64,
-            timeline_count,
-            total_words,
-            elapsed,
-            was_incremental,
-        );
+        let _ = db.save_cache(&project_id, &current_hashes).await;
+        let _ = db.sync_project(ctx).await;
+        let _ = db
+            .record_build(
+                &project_id,
+                cv,
+                bundle.podcasts.len() as i64,
+                timeline_count,
+                total_words,
+                elapsed,
+                was_incremental,
+            )
+            .await;
     }
 
     let stats = CompileStats {

@@ -100,7 +100,11 @@ impl DoctorOutcome {
     pub fn emit(&self) {
         match self {
             DoctorOutcome::Clean => {}
-            DoctorOutcome::Findings { errors, warnings, infos } => {
+            DoctorOutcome::Findings {
+                errors,
+                warnings,
+                infos,
+            } => {
                 for e in errors {
                     error!("{e}");
                 }
@@ -115,11 +119,19 @@ impl DoctorOutcome {
     }
 }
 
-fn collect_findings(errors: Vec<String>, warnings: Vec<String>, infos: Vec<String>) -> DoctorOutcome {
+fn collect_findings(
+    errors: Vec<String>,
+    warnings: Vec<String>,
+    infos: Vec<String>,
+) -> DoctorOutcome {
     if errors.is_empty() && warnings.is_empty() && infos.is_empty() {
         DoctorOutcome::Clean
     } else {
-        DoctorOutcome::Findings { errors, warnings, infos }
+        DoctorOutcome::Findings {
+            errors,
+            warnings,
+            infos,
+        }
     }
 }
 
@@ -134,18 +146,18 @@ pub fn check_file(root: &Path, filename: &str, hint: &str) {
     }
 }
 
-pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
+pub async fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
     info!("Running diagnostics");
 
-    if let Ok(db) = DbManager::open() {
+    if let Ok(db) = DbManager::open().await {
         info!("Database: connected ({})", db_path().display());
         let project_id = ctx.project_id();
-        if let Ok(Some(_)) = db.load_cache(&project_id) {
+        if let Ok(Some(_)) = db.load_cache(&project_id).await {
             info!("Cache: present in database");
         }
     }
 
-    let mut outcome = validate_all(ctx);
+    let mut outcome = validate_all(ctx).await;
     outcome.merge(lint_all(ctx));
 
     if ctx
@@ -157,7 +169,9 @@ pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
     {
         info!("Backend configured for staging");
     } else {
-        let msg = "No backend configured in cite.toml — deploy will use credentials file or env vars".to_string();
+        let msg =
+            "No backend configured in cite.toml — deploy will use credentials file or env vars"
+                .to_string();
         warn!("{msg}");
         outcome.push_warning(msg);
     }
@@ -198,12 +212,12 @@ pub fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
 
 // ── Comprehensive Validation (PRD Section 12) ──
 
-fn validate_all(ctx: &ProjectContext) -> DoctorOutcome {
+async fn validate_all(ctx: &ProjectContext) -> DoctorOutcome {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     let mut infos = Vec::new();
 
-    validate_project_structure(ctx, &mut errors, &mut warnings, &mut infos);
+    validate_project_structure(ctx, &mut errors, &mut warnings, &mut infos).await;
     validate_metadata(ctx, &mut errors, &mut warnings);
     validate_markdown(ctx, &mut errors, &mut warnings);
     validate_audio(ctx, &mut errors, &mut warnings);
@@ -214,7 +228,7 @@ fn validate_all(ctx: &ProjectContext) -> DoctorOutcome {
     collect_findings(errors, warnings, infos)
 }
 
-fn validate_project_structure(
+async fn validate_project_structure(
     ctx: &ProjectContext,
     errors: &mut Vec<String>,
     warnings: &mut Vec<String>,
@@ -229,7 +243,10 @@ fn validate_project_structure(
     ];
     for (name, path) in &required {
         if !path.exists() {
-            errors.push(format!("Required file '{name}' not found at {}", path.display()));
+            errors.push(format!(
+                "Required file '{name}' not found at {}",
+                path.display()
+            ));
         }
     }
 
@@ -241,7 +258,10 @@ fn validate_project_structure(
     ];
     for (name, path) in &dirs {
         if !path.is_dir() {
-            warnings.push(format!("Directory '{name}' does not exist at {}", path.display()));
+            warnings.push(format!(
+                "Directory '{name}' does not exist at {}",
+                path.display()
+            ));
         }
     }
 
@@ -250,9 +270,9 @@ fn validate_project_structure(
         infos.push(".cite/ directory found".to_string());
     }
 
-    if let Ok(db) = DbManager::open() {
+    if let Ok(db) = DbManager::open().await {
         let project_id = ctx.project_id();
-        if let Ok(stats) = db.get_project_stats(&project_id) {
+        if let Ok(stats) = db.get_project_stats(&project_id).await {
             infos.push(format!(
                 "Database stats: {} builds, {} deployments",
                 stats.build_count, stats.deployment_count
@@ -261,11 +281,7 @@ fn validate_project_structure(
     }
 }
 
-fn validate_metadata(
-    ctx: &ProjectContext,
-    errors: &mut Vec<String>,
-    warnings: &mut Vec<String>,
-) {
+fn validate_metadata(ctx: &ProjectContext, errors: &mut Vec<String>, warnings: &mut Vec<String>) {
     let podcasts = &ctx.metadata.podcasts;
     if podcasts.is_empty() {
         warnings.push("No podcasts defined in metadata".to_string());
@@ -287,7 +303,10 @@ fn validate_metadata(
                 errors.push(format!("Duplicate podcast title: '{}'", pod.title));
             }
             if !files.insert(pod.file.clone()) {
-                errors.push(format!("Duplicate file reference: '{}' in podcast '{}'", pod.file, pod.title));
+                errors.push(format!(
+                    "Duplicate file reference: '{}' in podcast '{}'",
+                    pod.file, pod.title
+                ));
             }
 
             let path = ctx.root.join(&pod.file);
@@ -330,17 +349,14 @@ fn validate_metadata(
         }
 
         if !ctx.manifest.project.artist_id.is_empty()
-            && uuid::Uuid::parse_str(&ctx.manifest.project.artist_id).is_err() {
-                errors.push("artist_id in cite.toml must be a valid UUID".to_string());
-            }
+            && uuid::Uuid::parse_str(&ctx.manifest.project.artist_id).is_err()
+        {
+            errors.push("artist_id in cite.toml must be a valid UUID".to_string());
+        }
     }
 }
 
-fn validate_markdown(
-    ctx: &ProjectContext,
-    errors: &mut Vec<String>,
-    warnings: &mut Vec<String>,
-) {
+fn validate_markdown(ctx: &ProjectContext, errors: &mut Vec<String>, warnings: &mut Vec<String>) {
     for pod in &ctx.metadata.podcasts {
         if pod.file.is_empty() {
             continue;
@@ -356,22 +372,26 @@ fn validate_markdown(
                 }
                 let lines: Vec<&str> = content.lines().collect();
                 if let Some(first) = lines.first()
-                    && first.starts_with("---") {
-                        if let Some(end) = lines.iter().position(|l| l.starts_with("---") && l != &"---") {
-                            let frontmatter: Vec<&&str> = lines[1..end].iter().collect();
-                            if frontmatter.is_empty() {
-                                warnings.push(format!(
-                                    "Podcast '{}' has empty YAML frontmatter",
-                                    pod.title
-                                ));
-                            }
-                        } else {
+                    && first.starts_with("---")
+                {
+                    if let Some(end) = lines
+                        .iter()
+                        .position(|l| l.starts_with("---") && l != &"---")
+                    {
+                        let frontmatter: Vec<&&str> = lines[1..end].iter().collect();
+                        if frontmatter.is_empty() {
                             warnings.push(format!(
-                                "Podcast '{}' has unclosed YAML frontmatter",
+                                "Podcast '{}' has empty YAML frontmatter",
                                 pod.title
                             ));
                         }
+                    } else {
+                        warnings.push(format!(
+                            "Podcast '{}' has unclosed YAML frontmatter",
+                            pod.title
+                        ));
                     }
+                }
             }
             Err(e) => {
                 errors.push(format!(
@@ -383,11 +403,7 @@ fn validate_markdown(
     }
 }
 
-fn validate_audio(
-    ctx: &ProjectContext,
-    errors: &mut Vec<String>,
-    _warnings: &mut Vec<String>,
-) {
+fn validate_audio(ctx: &ProjectContext, errors: &mut Vec<String>, _warnings: &mut Vec<String>) {
     let supported = ["mp3", "wav", "flac", "ogg", "m4a"];
 
     for pod in &ctx.metadata.podcasts {
@@ -423,11 +439,7 @@ fn validate_audio(
     }
 }
 
-fn validate_images(
-    ctx: &ProjectContext,
-    errors: &mut Vec<String>,
-    _warnings: &mut Vec<String>,
-) {
+fn validate_images(ctx: &ProjectContext, errors: &mut Vec<String>, _warnings: &mut Vec<String>) {
     let supported = ["jpg", "jpeg", "png", "webp", "gif"];
 
     for pod in &ctx.metadata.podcasts {
@@ -462,20 +474,19 @@ fn validate_images(
         }
 
         if let Ok(meta) = crate::core::media::extract_image(&path)
-            && meta.width > 0 && meta.height > 0 && (meta.width < 100 || meta.height < 100) {
-                errors.push(format!(
-                    "Podcast '{}' image is too small ({}x{}), minimum 100x100 pixels",
-                    pod.title, meta.width, meta.height
-                ));
-            }
+            && meta.width > 0
+            && meta.height > 0
+            && (meta.width < 100 || meta.height < 100)
+        {
+            errors.push(format!(
+                "Podcast '{}' image is too small ({}x{}), minimum 100x100 pixels",
+                pod.title, meta.width, meta.height
+            ));
+        }
     }
 }
 
-fn validate_bibtex(
-    ctx: &ProjectContext,
-    errors: &mut Vec<String>,
-    warnings: &mut Vec<String>,
-) {
+fn validate_bibtex(ctx: &ProjectContext, errors: &mut Vec<String>, warnings: &mut Vec<String>) {
     for pod in &ctx.metadata.podcasts {
         let Some(ref citation) = pod.citation else {
             continue;
@@ -487,10 +498,7 @@ fn validate_bibtex(
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 if content.trim().is_empty() {
-                    warnings.push(format!(
-                        "Podcast '{}' has empty BibTeX file",
-                        pod.title
-                    ));
+                    warnings.push(format!("Podcast '{}' has empty BibTeX file", pod.title));
                     continue;
                 }
                 let entries = crate::core::compiler::parse_bibtex(&content);
@@ -521,29 +529,29 @@ fn validate_bibtex(
     }
 }
 
-fn validate_urls(
-    ctx: &ProjectContext,
-    errors: &mut Vec<String>,
-    warnings: &mut Vec<String>,
-) {
+fn validate_urls(ctx: &ProjectContext, errors: &mut Vec<String>, warnings: &mut Vec<String>) {
     let mut urls = HashSet::new();
 
     for pod in &ctx.metadata.podcasts {
         if let Some(ref url) = pod.source_url
-            && !url.trim().is_empty() {
-                if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("cite://") {
-                    errors.push(format!(
+            && !url.trim().is_empty()
+        {
+            if !url.starts_with("http://")
+                && !url.starts_with("https://")
+                && !url.starts_with("cite://")
+            {
+                errors.push(format!(
                         "Podcast '{}' has invalid source_url: '{url}' (must start with http://, https://, or cite://)",
                         pod.title
                     ));
-                }
-                if !urls.insert(url.clone()) {
-                    warnings.push(format!(
-                        "Podcast '{}' has duplicate source_url: '{url}'",
-                        pod.title
-                    ));
-                }
             }
+            if !urls.insert(url.clone()) {
+                warnings.push(format!(
+                    "Podcast '{}' has duplicate source_url: '{url}'",
+                    pod.title
+                ));
+            }
+        }
     }
 }
 
@@ -579,7 +587,10 @@ pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
         let word_count = content_str.split_whitespace().count();
         let reading_time = (word_count as f64 / 200.0).ceil() as u64;
         let content_copy = content_str.clone();
-        let lines: Vec<&str> = content_str.lines().filter(|l| !l.trim().is_empty()).collect();
+        let lines: Vec<&str> = content_str
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
 
         all_content.push((pod.title.clone(), content_copy, word_count, reading_time));
 
@@ -614,22 +625,12 @@ pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
         let has_h1 = lines.iter().any(|l| l.starts_with("# "));
         let has_h2 = lines.iter().any(|l| l.starts_with("## "));
         if !has_h1 && !has_h2 {
-            warnings.push(format!(
-                "Podcast '{}' has no H1 or H2 headings",
-                pod.title
-            ));
+            warnings.push(format!("Podcast '{}' has no H1 or H2 headings", pod.title));
         } else if !has_h1 {
             warnings.push(format!(
                 "Podcast '{}' has no H1 heading — consider adding a title",
                 pod.title
             ));
-        }
-
-        for line in &lines {
-            let words_in_line = line.split_whitespace().count();
-            if words_in_line > 0 && words_in_line < 20 && line.len() > 3 {
-                // Only warn if there are more than a few such lines
-            }
         }
 
         if word_count > 500 {
@@ -646,10 +647,7 @@ pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
         if let Some(ref audio) = pod.audio {
             let audio_path = ctx.root.join(audio);
             if audio_path.exists() {
-                infos.push(format!(
-                    "Podcast '{}' has audio file: {}",
-                    pod.title, audio
-                ));
+                infos.push(format!("Podcast '{}' has audio file: {}", pod.title, audio));
 
                 if let Ok(meta) = crate::core::media::extract_audio(&audio_path) {
                     audio_durations.push(meta.duration_secs);
@@ -703,30 +701,31 @@ pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
         if let Some(ref thumb) = pod.thumbnail {
             let thumb_path = ctx.root.join(thumb);
             if thumb_path.exists()
-                && let Ok(meta) = crate::core::media::extract_image(&thumb_path) {
-                    image_sizes.push((meta.width, meta.height, meta.size_bytes));
+                && let Ok(meta) = crate::core::media::extract_image(&thumb_path)
+            {
+                image_sizes.push((meta.width, meta.height, meta.size_bytes));
 
-                    if (meta.width > 0 && meta.width < 200) || (meta.height > 0 && meta.height < 200) {
-                        warnings.push(format!(
-                            "Podcast '{}' thumbnail is small ({}x{}) — minimum 200x200 recommended",
-                            pod.title, meta.width, meta.height
-                        ));
-                    }
-                    if meta.width > 8000 || meta.height > 8000 {
-                        warnings.push(format!(
+                if (meta.width > 0 && meta.width < 200) || (meta.height > 0 && meta.height < 200) {
+                    warnings.push(format!(
+                        "Podcast '{}' thumbnail is small ({}x{}) — minimum 200x200 recommended",
+                        pod.title, meta.width, meta.height
+                    ));
+                }
+                if meta.width > 8000 || meta.height > 8000 {
+                    warnings.push(format!(
                             "Podcast '{}' thumbnail is very large ({}x{}) — maximum 8000x8000 recommended",
                             pod.title, meta.width, meta.height
                         ));
-                    }
-
-                    if meta.size_bytes > 3 * 1024 * 1024 {
-                        warnings.push(format!(
-                            "Podcast '{}' thumbnail is large ({} MB > 3 MB)",
-                            pod.title,
-                            meta.size_bytes / (1024 * 1024)
-                        ));
-                    }
                 }
+
+                if meta.size_bytes > 3 * 1024 * 1024 {
+                    warnings.push(format!(
+                        "Podcast '{}' thumbnail is large ({} MB > 3 MB)",
+                        pod.title,
+                        meta.size_bytes / (1024 * 1024)
+                    ));
+                }
+            }
         }
     }
 
@@ -783,7 +782,9 @@ pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
                 if trimmed.len() > 20 && paras_j.iter().any(|pj| pj.trim() == trimmed) {
                     warnings.push(format!(
                         "Duplicate paragraph found in '{}' and '{}' (paragraph {})",
-                        all_content[i].0, all_content[j].0, pi + 1
+                        all_content[i].0,
+                        all_content[j].0,
+                        pi + 1
                     ));
                 }
             }
@@ -840,7 +841,12 @@ mod tests {
         o1.merge(o2);
         assert!(o1.has_errors());
         assert!(o1.has_warnings());
-        if let DoctorOutcome::Findings { errors, warnings, infos } = &o1 {
+        if let DoctorOutcome::Findings {
+            errors,
+            warnings,
+            infos,
+        } = &o1
+        {
             assert_eq!(errors.len(), 2);
             assert_eq!(warnings.len(), 1);
             assert_eq!(infos.len(), 1);
@@ -866,5 +872,4 @@ mod tests {
             1
         );
     }
-
 }

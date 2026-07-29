@@ -45,7 +45,10 @@ pub struct UuidCache {
 impl UuidCache {
     pub fn load(root: &Path) -> Self {
         let path = root.join(".cite").join("cache").join("uuid_map.json");
-        match std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()) {
+        match std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+        {
             Some(m) => m,
             None => Self {
                 mapping: HashMap::new(),
@@ -77,9 +80,7 @@ pub async fn hash_files(files: &[impl AsRef<Path>]) -> Result<HashMap<String, St
     for file in files {
         let path = file.as_ref();
         if path.exists() && path.is_file() {
-            let mut f = tokio::fs::File::open(path).await?;
-            let mut buf = Vec::new();
-            tokio::io::AsyncReadExt::read_to_end(&mut f, &mut buf).await?;
+            let buf = tokio::fs::read(path).await?;
             let hash = Sha256::digest(&buf)
                 .iter()
                 .map(|b| format!("{b:02x}"))

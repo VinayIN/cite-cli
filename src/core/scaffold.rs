@@ -57,7 +57,7 @@ pub fn init_project(name: &str, root: &Path) -> Result<(), CiteError> {
 
 fn manifest_template(name: &str) -> Result<String, CiteError> {
     let manifest = Manifest::default_template(name);
-    let body = toml::to_string(&manifest).map_err(|e| CiteError::Config(e.to_string()))?;
+    let body = toml::to_string(&manifest)?;
     Ok(format!("{AUTO_GEN_HEADER}\n{body}"))
 }
 

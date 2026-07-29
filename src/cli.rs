@@ -104,7 +104,9 @@ impl CliCommand {
                 };
                 scaffold::init_project(&name, &root)?;
                 if cli.json {
-                    print_json(&serde_json::json!({"status": "ok", "project": name, "root": root.to_string_lossy()}));
+                    print_json(
+                        &serde_json::json!({"status": "ok", "project": name, "root": root.to_string_lossy()}),
+                    );
                 } else {
                     println!(
                         "{}",
@@ -161,7 +163,10 @@ impl CliCommand {
                                         let mut v = serde_json::to_value(stats).unwrap_or_default();
                                         if let Some(obj) = v.as_object_mut() {
                                             obj.insert("status".into(), "complete".into());
-                                            obj.insert("artifact".into(), artifact.to_string_lossy().into());
+                                            obj.insert(
+                                                "artifact".into(),
+                                                artifact.to_string_lossy().into(),
+                                            );
                                         }
                                         print_json(&v);
                                     }
@@ -200,14 +205,18 @@ impl CliCommand {
                         match deploy::deploy_staging(ctx, cli.dry_run).await {
                             Ok(msg) => {
                                 if cli.json {
-                                    print_json(&serde_json::json!({"status": "ok", "message": msg}));
+                                    print_json(
+                                        &serde_json::json!({"status": "ok", "message": msg}),
+                                    );
                                 } else {
                                     eprintln!("{msg}");
                                 }
                             }
                             Err(e) => {
                                 if cli.json {
-                                    print_json(&serde_json::json!({"status": "error", "message": e.to_string()}));
+                                    print_json(
+                                        &serde_json::json!({"status": "error", "message": e.to_string()}),
+                                    );
                                 } else {
                                     warn!("Staging deploy failed: {e}");
                                 }
@@ -218,14 +227,18 @@ impl CliCommand {
                         match deploy::deploy(ctx, cli.dry_run).await {
                             Ok(msg) => {
                                 if cli.json {
-                                    print_json(&serde_json::json!({"status": "ok", "message": msg}));
+                                    print_json(
+                                        &serde_json::json!({"status": "ok", "message": msg}),
+                                    );
                                 } else {
                                     eprintln!("{msg}");
                                 }
                             }
                             Err(e) => {
                                 if cli.json {
-                                    print_json(&serde_json::json!({"status": "error", "message": e.to_string()}));
+                                    print_json(
+                                        &serde_json::json!({"status": "error", "message": e.to_string()}),
+                                    );
                                 } else {
                                     warn!("Deploy failed: {e}");
                                 }
@@ -255,9 +268,11 @@ impl CliCommand {
                         info!("Project Status");
                     }
                     if cli.json {
-                        print_json(&serde_json::json!({"project": ctx.manifest.project.name, "root": ctx.root.to_string_lossy(), "podcasts": ctx.metadata.podcasts.len()}));
+                        print_json(
+                            &serde_json::json!({"project": ctx.manifest.project.name, "root": ctx.root.to_string_lossy(), "podcasts": ctx.metadata.podcasts.len()}),
+                        );
                     } else {
-                        project::print_status(ctx);
+                        project::print_status(ctx).await;
                     }
                 }
                 if !cli.json {
@@ -269,7 +284,9 @@ impl CliCommand {
                 let root = PathBuf::from(path);
                 let Some(projects) = load_projects(path, "")? else {
                     if cli.json {
-                        print_json(&serde_json::json!({"status": "noproject", "errors": ["No cite.toml found"]}));
+                        print_json(
+                            &serde_json::json!({"status": "noproject", "errors": ["No cite.toml found"]}),
+                        );
                     } else {
                         info!("Running diagnostics");
                         doctor::check_file(&root, "cite.toml", "run 'cite-cli init'");
@@ -285,10 +302,11 @@ impl CliCommand {
                     if multi {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
-                    let outcome = doctor::run(ctx)?;
+                    let outcome = doctor::run(ctx).await?;
                     if cli.json
-                        && let Ok(v) = serde_json::to_value(&outcome) {
-                            all_outcomes.push(v);
+                        && let Ok(v) = serde_json::to_value(&outcome)
+                    {
+                        all_outcomes.push(v);
                     }
                     if outcome.has_errors() {
                         has_errors = true;
@@ -319,9 +337,11 @@ impl CliCommand {
                     if multi {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
-                    ctx.clean()?;
+                    ctx.clean().await?;
                     if cli.json {
-                        print_json(&serde_json::json!({"status": "ok", "project": ctx.manifest.project.name}));
+                        print_json(
+                            &serde_json::json!({"status": "ok", "project": ctx.manifest.project.name}),
+                        );
                     } else {
                         println!("{}", "Cleaned build artifacts".green());
                     }

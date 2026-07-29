@@ -44,7 +44,7 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
         info!("Removed empty directory {}", install_dir.display());
     }
 
-    // Remove DuckDB database and session
+    // Remove local database and session
     let home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
     let cite_dir = PathBuf::from(&home).join(".cite");
     if cite_dir.exists() {

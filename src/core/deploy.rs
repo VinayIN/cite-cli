@@ -144,18 +144,20 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteE
             info!("Artist ID: {artist_id}");
         }
 
-        if let Ok(db) = DbManager::open() {
+        if let Ok(db) = DbManager::open().await {
             let project_id = ctx.id();
-            let _ = db.record_deployment(
-                &project_id,
-                &deployment_id,
-                "",
-                podcasts.len() as i64,
-                timelines.len() as i64,
-                0,
-                true,
-                true,
-            );
+            let _ = db
+                .record_deployment(
+                    &project_id,
+                    &deployment_id,
+                    "",
+                    podcasts.len() as i64,
+                    timelines.len() as i64,
+                    0,
+                    true,
+                    true,
+                )
+                .await;
         }
 
         return Ok("Dry run complete".to_string());
@@ -198,18 +200,20 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteE
     let timeline_count = record.timeline_ids.len() as i64;
     let asset_count = record.asset_paths.len() as i64;
 
-    if let Ok(db) = DbManager::open() {
+    if let Ok(db) = DbManager::open().await {
         let project_id = ctx.id();
-        let _ = db.record_deployment(
-            &project_id,
-            &deployment_id,
-            &storage_path,
-            podcast_count,
-            timeline_count,
-            asset_count,
-            true,
-            false,
-        );
+        let _ = db
+            .record_deployment(
+                &project_id,
+                &deployment_id,
+                &storage_path,
+                podcast_count,
+                timeline_count,
+                asset_count,
+                true,
+                false,
+            )
+            .await;
     }
 
     Ok(format!(
@@ -241,18 +245,20 @@ pub async fn deploy_staging(ctx: &ProjectContext, dry_run: bool) -> Result<Strin
     info!("Staging deployment: {deployment_id}");
 
     // Sync project data to local cite.db
-    if let Ok(db) = DbManager::open() {
-        let _ = db.sync_project(ctx);
-        let _ = db.record_deployment(
-            &ctx.id(),
-            &deployment_id,
-            "",
-            podcasts,
-            timelines,
-            0,
-            !dry_run,
-            dry_run,
-        );
+    if let Ok(db) = DbManager::open().await {
+        let _ = db.sync_project(ctx).await;
+        let _ = db
+            .record_deployment(
+                &ctx.id(),
+                &deployment_id,
+                "",
+                podcasts,
+                timelines,
+                0,
+                !dry_run,
+                dry_run,
+            )
+            .await;
     }
 
     // Persist deployment record locally
@@ -1146,17 +1152,57 @@ async fn upload_bytes(
     let base_url = &dctx.base_url;
     let url = format!("{base_url}/storage/v1/object/{STORAGE_BUCKET}/{storage_path}");
 
-    let response = with_auth(dctx.client.post(&url), &dctx.api_key, &dctx.bearer)
-        .header("Content-Type", mime)
-        .body(bytes.to_vec())
-        .send()
-        .await?;
+    let mut last_err = None;
+    for attempt in 0..3 {
+        let response = with_auth(dctx.client.post(&url), &dctx.api_key, &dctx.bearer)
+            .header("Content-Type", mime)
+            .body(bytes.to_vec())
+            .send()
+            .await;
+        match response {
+            Ok(r) if r.status().is_success() => {
+                let public_url =
+                    format!("{base_url}/storage/v1/object/public/{STORAGE_BUCKET}/{storage_path}");
+                info!("Uploaded {storage_path}");
+                return Ok(public_url);
+            }
+            Ok(r) => {
+                let status = r.status();
+                let body = r.text().await.unwrap_or_default();
+                last_err = Some(format!("HTTP {status} - {body}"));
+                warn!(
+                    "Upload attempt {}/3 failed: {}",
+                    attempt + 1,
+                    last_err.as_ref().unwrap()
+                );
+                if attempt < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        500 * (attempt as u64 + 1),
+                    ))
+                    .await;
+                }
+            }
+            Err(e) => {
+                last_err = Some(e.to_string());
+                warn!(
+                    "Upload attempt {}/3 failed: {}",
+                    attempt + 1,
+                    last_err.as_ref().unwrap()
+                );
+                if attempt < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        500 * (attempt as u64 + 1),
+                    ))
+                    .await;
+                }
+            }
+        }
+    }
 
-    ensure_success(response, format!("Failed to upload {storage_path}")).await?;
-
-    let public_url = format!("{base_url}/storage/v1/object/public/{STORAGE_BUCKET}/{storage_path}");
-    info!("Uploaded {storage_path}");
-    Ok(public_url)
+    Err(CiteError::Deploy(format!(
+        "Failed to upload {storage_path} after 3 attempts: {}",
+        last_err.unwrap_or_default()
+    )))
 }
 
 fn mime_for_extension(ext: &str) -> &'static str {

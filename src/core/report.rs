@@ -41,8 +41,14 @@ impl From<serde_json::Error> for CiteError {
     }
 }
 
-impl From<duckdb::Error> for CiteError {
-    fn from(e: duckdb::Error) -> Self {
-        CiteError::Database(format!("DuckDB error: {}", e))
+impl From<libsql::Error> for CiteError {
+    fn from(e: libsql::Error) -> Self {
+        CiteError::Database(format!("SQLite error: {}", e))
+    }
+}
+
+impl From<toml::ser::Error> for CiteError {
+    fn from(e: toml::ser::Error) -> Self {
+        CiteError::Config(format!("TOML serialize error: {}", e))
     }
 }

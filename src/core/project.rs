@@ -39,7 +39,6 @@ pub struct StoredBuild {
 
 /// Per-project analytics from the DB
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ProjectStats {
     pub podcast_count: i64,
     pub timeline_count: i64,
@@ -54,14 +53,12 @@ pub struct ProjectStats {
 
 /// Cross-project analytics from the DB
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AllStats {
     pub project_count: i64,
     pub total_podcasts: i64,
     pub total_timelines: i64,
     pub total_words: i64,
     pub total_builds: i64,
-    pub top_projects: Vec<(String, i64, i64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,20 +119,20 @@ impl ProjectContext {
             .collect()
     }
 
-    pub fn clean(&self) -> Result<(), CiteError> {
+    pub async fn clean(&self) -> Result<(), CiteError> {
         let build_dir = self.build_dir();
         if build_dir.exists() {
-            std::fs::remove_dir_all(&build_dir)?;
+            tokio::fs::remove_dir_all(&build_dir).await?;
         }
 
-        if let Ok(db) = crate::core::db::DbManager::open() {
-            let _ = db.clear_cache(&self.id());
+        if let Ok(db) = crate::core::db::DbManager::open().await {
+            let _ = db.clear_cache(&self.id()).await;
         }
         Ok(())
     }
 }
 
-pub fn print_status(ctx: &ProjectContext) {
+pub async fn print_status(ctx: &ProjectContext) {
     info!("Name: {}", ctx.manifest.project.name);
     info!("Root: {}", ctx.root.display());
     info!("Artist ID: {}", ctx.manifest.project.artist_id);
@@ -146,10 +143,10 @@ pub fn print_status(ctx: &ProjectContext) {
     }
     info!("Podcasts: {}", ctx.metadata.podcasts.len());
 
-    if let Ok(db) = crate::core::db::DbManager::open() {
+    if let Ok(db) = crate::core::db::DbManager::open().await {
         let project_id = ctx.id();
 
-        if let Ok(stats) = db.get_project_stats(&project_id) {
+        if let Ok(stats) = db.get_project_stats(&project_id).await {
             info!("Total words: {}", stats.total_words);
             info!("Timeline entries: {}", stats.timeline_count);
             info!("Builds recorded: {}", stats.build_count);
@@ -162,27 +159,29 @@ pub fn print_status(ctx: &ProjectContext) {
             }
         }
 
-        if let Ok(builds) = db.get_build_history(&project_id)
-            && let Some(b) = builds.first() {
-                info!(
-                    "Recent build: {} podcasts, {} timelines, {} words, {}ms ({})",
-                    b.podcast_count,
-                    b.timeline_count,
-                    b.total_words,
-                    b.duration_ms,
-                    if b.was_incremental { "incr" } else { "full" },
-                );
-            }
+        if let Ok(builds) = db.get_build_history(&project_id).await
+            && let Some(b) = builds.first()
+        {
+            info!(
+                "Recent build: {} podcasts, {} timelines, {} words, {}ms ({})",
+                b.podcast_count,
+                b.timeline_count,
+                b.total_words,
+                b.duration_ms,
+                if b.was_incremental { "incr" } else { "full" },
+            );
+        }
 
-        if let Ok(deploys) = db.get_deployment_history(&project_id)
-            && let Some(d) = deploys.first() {
-                info!(
-                    "Recent deploy: {} at {} ({})",
-                    d.deployment_id,
-                    d.deployed_at,
-                    if d.success { "ok" } else { "fail" },
-                );
-            }
+        if let Ok(deploys) = db.get_deployment_history(&project_id).await
+            && let Some(d) = deploys.first()
+        {
+            info!(
+                "Recent deploy: {} at {} ({})",
+                d.deployment_id,
+                d.deployed_at,
+                if d.success { "ok" } else { "fail" },
+            );
+        }
     }
 }
 
@@ -315,7 +314,10 @@ incremental = true
         std::fs::write(dir.path().join("build").join("artifact.txt"), "data").unwrap();
         let ctx = ProjectContext::load(dir.path()).unwrap();
         assert!(ctx.build_dir().exists());
-        ctx.clean().unwrap();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(ctx.clean())
+            .unwrap();
         assert!(!ctx.build_dir().exists());
     }
 }
