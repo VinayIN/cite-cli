@@ -5,7 +5,7 @@ use duckdb::{Connection, params};
 use tracing::info;
 
 use crate::core::CiteError;
-use crate::core::cache::BuildCache;
+use crate::core::cache::{BuildCache, UuidCache};
 use crate::core::project::ProjectContext;
 
 pub fn global_db_path() -> PathBuf {
@@ -174,6 +174,9 @@ impl DbManager {
             params![project_id],
         )?;
 
+        // Use persistent UUIDs matching the compiler's scheme
+        let mut uuid_cache = UuidCache::load(&ctx.root);
+
         for pod in &ctx.metadata.podcasts {
             let content = read_content_file(&ctx.root.join(&pod.file));
             let wc = content
@@ -181,12 +184,14 @@ impl DbManager {
                 .map(|c| c.split_whitespace().count() as i64)
                 .unwrap_or(0);
 
+            let pod_id = uuid_cache.get_or_create(&format!("podcast:{}:{}", project_id, pod.file));
+
             self.conn.execute(
                 "INSERT INTO podcasts (id, project_id, title, file, source_url, category,
                         thumbnail, audio, citation_file, content, word_count)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
-                    uuid::Uuid::new_v4().to_string(),
+                    pod_id,
                     project_id,
                     pod.title,
                     pod.file,
@@ -207,16 +212,19 @@ impl DbManager {
                 if bib_path.exists()
                     && let Ok(raw) = std::fs::read_to_string(&bib_path) {
                         let entries = crate::core::compiler::parse_bibtex(&raw);
-                        let pid = uuid::Uuid::new_v4().to_string();
+                        let tl_id = uuid_cache.get_or_create(&format!("timeline:{}:{}", project_id, cit));
                         for entry in &entries {
+                            let entry_id = uuid_cache.get_or_create(
+                                &format!("entry:{}:{}", tl_id, entry.title),
+                            );
                             self.conn.execute(
                                 "INSERT INTO timeline_entries
                                         (id, project_id, podcast_id, date, title, summary, url, entry_type)
                                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                                 params![
-                                    entry.id,
+                                    entry_id,
                                     project_id,
-                                    pid,
+                                    tl_id,
                                     entry.date,
                                     entry.title,
                                     entry.summary,
@@ -228,6 +236,8 @@ impl DbManager {
                     }
             }
         }
+
+        uuid_cache.save(&ctx.root);
 
         info!(
             "Synced {} podcast(s) and timeline entries for '{}'",

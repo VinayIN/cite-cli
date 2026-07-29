@@ -90,8 +90,8 @@ pub const CMDS: &[Cmd] = &[
     },
     Cmd {
         label: "deploy",
-        desc: "Deploy the built project to Supabase staging",
-        args_hint: "[--dry-run]",
+        desc: "Deploy to Supabase (--staging for local cite.db)",
+        args_hint: "[--dry-run] [--staging]",
         needs_project: true,
         id: CommandId::Deploy,
     },
@@ -195,7 +195,8 @@ pub struct AppState {
 impl AppState {
     pub fn new(cwd: &Path) -> Self {
         let (tx, rx) = mpsc::channel(32);
-        let mut roots = project::discover_projects(cwd);
+        let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        let mut roots = project::discover_projects(&cwd);
         roots.sort();
 
         let mut projects_state = ListState::default();
@@ -248,14 +249,7 @@ impl AppState {
     }
 
     fn refresh_projects(&mut self) {
-        let mut r = project::discover_projects(&self.cwd);
-        for p in std::mem::take(&mut self.roots) {
-            if !r.contains(&p) && !p.starts_with(&self.cwd) {
-                r.push(p);
-            }
-        }
-        r.sort();
-        self.roots = r;
+        self.roots = project::discover_projects(&self.cwd);
         if let Some(sel) = self.projects_state.selected() {
             self.projects_state
                 .select(Some(sel.min(self.roots.len().saturating_sub(1))));
@@ -643,15 +637,6 @@ impl AppState {
                 .unwrap_or_default()
         );
 
-        if cmd.id == CommandId::Init {
-            let name = raw_args.split_whitespace().next().unwrap_or("new-project");
-            let path = resolve_relative(&self.cwd, name);
-            if !self.roots.contains(&path) {
-                self.roots.push(path);
-                self.roots.sort();
-            }
-        }
-
         self.busy = true;
         let id = cmd.id;
         let tx = self.tx.clone();
@@ -714,15 +699,14 @@ fn color_log_line(l: &str) -> Line<'static> {
     }
 }
 
-pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>) -> Result<(), CiteError> {
+pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>, cli_root: PathBuf) -> Result<(), CiteError> {
     let mut terminal = ratatui::init();
     let _guard = TerminalGuard;
     terminal
         .clear()
         .map_err(|e| CiteError::Config(format!("{e}")))?;
 
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let mut app = AppState::new(&cwd);
+    let mut app = AppState::new(&cli_root);
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
@@ -1564,9 +1548,17 @@ async fn exec_deploy(root: Option<PathBuf>, raw: String) {
         }
     };
     let dry_run = raw.split_whitespace().any(|w| w == "--dry-run");
-    match deploy::deploy(&ctx, dry_run).await {
-        Ok(msg) => info!("{msg}"),
-        Err(e) => error!("Deploy failed: {e}"),
+    let staging = raw.split_whitespace().any(|w| w == "--staging");
+    if staging {
+        match deploy::deploy_staging(&ctx, dry_run).await {
+            Ok(msg) => info!("{msg}"),
+            Err(e) => error!("Staging deploy failed: {e}"),
+        }
+    } else {
+        match deploy::deploy(&ctx, dry_run).await {
+            Ok(msg) => info!("{msg}"),
+            Err(e) => error!("Deploy failed: {e}"),
+        }
     }
 }
 

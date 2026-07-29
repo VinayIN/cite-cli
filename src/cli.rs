@@ -36,9 +36,6 @@ pub struct Cli {
 
     #[arg(global = true, long)]
     pub dry_run: bool,
-
-    #[arg(global = true, long)]
-    pub tui: bool,
 }
 
 #[derive(Clone, Subcommand)]
@@ -51,7 +48,10 @@ pub enum CliCommand {
         #[arg(long)]
         force: bool,
     },
-    Deploy,
+    Deploy {
+        #[arg(long)]
+        staging: bool,
+    },
     Login {
         #[arg(long)]
         email: Option<String>,
@@ -185,7 +185,7 @@ impl CliCommand {
                 }
                 Ok(())
             }
-            CliCommand::Deploy => {
+            CliCommand::Deploy { staging } => {
                 let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
@@ -196,21 +196,41 @@ impl CliCommand {
                     if multi {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
-                    match deploy::deploy(ctx, cli.dry_run).await {
-                        Ok(msg) => {
-                            if cli.json {
-                                print_json(&serde_json::json!({"status": "ok", "message": msg}));
-                            } else {
-                                eprintln!("{msg}");
+                    if staging {
+                        match deploy::deploy_staging(ctx, cli.dry_run).await {
+                            Ok(msg) => {
+                                if cli.json {
+                                    print_json(&serde_json::json!({"status": "ok", "message": msg}));
+                                } else {
+                                    eprintln!("{msg}");
+                                }
+                            }
+                            Err(e) => {
+                                if cli.json {
+                                    print_json(&serde_json::json!({"status": "error", "message": e.to_string()}));
+                                } else {
+                                    warn!("Staging deploy failed: {e}");
+                                }
+                                has_errors = true;
                             }
                         }
-                        Err(e) => {
-                            if cli.json {
-                                print_json(&serde_json::json!({"status": "error", "message": e.to_string()}));
-                            } else {
-                                warn!("Deploy failed: {e}");
+                    } else {
+                        match deploy::deploy(ctx, cli.dry_run).await {
+                            Ok(msg) => {
+                                if cli.json {
+                                    print_json(&serde_json::json!({"status": "ok", "message": msg}));
+                                } else {
+                                    eprintln!("{msg}");
+                                }
                             }
-                            has_errors = true;
+                            Err(e) => {
+                                if cli.json {
+                                    print_json(&serde_json::json!({"status": "error", "message": e.to_string()}));
+                                } else {
+                                    warn!("Deploy failed: {e}");
+                                }
+                                has_errors = true;
+                            }
                         }
                     }
                 }

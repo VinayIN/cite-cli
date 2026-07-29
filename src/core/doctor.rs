@@ -732,11 +732,19 @@ pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
 
     // Cross-podcast lint checks
     if !audio_formats.is_empty() {
-        let first = &audio_formats[0];
-        for (i, fmt) in audio_formats.iter().enumerate().skip(1) {
-            if fmt != first {
+        let mut counts = std::collections::HashMap::new();
+        for fmt in &audio_formats {
+            *counts.entry(fmt.clone()).or_insert(0) += 1;
+        }
+        let majority = counts
+            .into_iter()
+            .max_by_key(|&(_, c)| c)
+            .map(|(f, _)| f)
+            .unwrap_or_else(|| audio_formats[0].clone());
+        for (i, fmt) in audio_formats.iter().enumerate() {
+            if fmt != &majority {
                 warnings.push(format!(
-                    "Audio format inconsistency: podcast {} uses '{}' while most use '{first}'",
+                    "Audio format inconsistency: podcast {} uses '{}' while most use '{majority}'",
                     i + 1,
                     fmt
                 ));
@@ -745,11 +753,19 @@ pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
     }
 
     if sample_rates.len() >= 2 {
-        let first_rate = sample_rates[0];
-        for (i, &rate) in sample_rates.iter().enumerate().skip(1) {
-            if rate > 0 && rate != first_rate {
+        let mut counts = std::collections::HashMap::new();
+        for &rate in &sample_rates {
+            *counts.entry(rate).or_insert(0) += 1;
+        }
+        let majority_rate = counts
+            .into_iter()
+            .max_by_key(|&(_, c)| c)
+            .map(|(r, _)| r)
+            .unwrap_or(sample_rates[0]);
+        for (i, &rate) in sample_rates.iter().enumerate() {
+            if rate > 0 && rate != majority_rate {
                 warnings.push(format!(
-                    "Sample rate inconsistency: podcast {} uses {} Hz while others use {first_rate} Hz",
+                    "Sample rate inconsistency: podcast {} uses {} Hz while most use {majority_rate} Hz",
                     i + 1,
                     rate
                 ));

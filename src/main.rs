@@ -5,6 +5,7 @@ mod tui;
 use clap::Parser;
 use cli::Cli;
 use colored::Colorize;
+use std::path::PathBuf;
 use std::io::Write;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -32,7 +33,7 @@ async fn main() {
         EnvFilter::new("cite_cli=info")
     };
 
-    if cli.command.is_none() || cli.tui {
+    if cli.command.is_none() {
         let (log_tx, log_rx) = mpsc::unbounded_channel();
         tracing_subscriber::fmt()
             .with_env_filter(filter)
@@ -43,7 +44,8 @@ async fn main() {
             .with_writer(move || LogWriter { tx: log_tx.clone(), buf: String::new() })
             .init();
         info!("cite-cli v{}", env!("CARGO_PKG_VERSION"));
-        if let Err(e) = tui::run_tui(log_rx).await {
+        let root = PathBuf::from(&cli.path);
+        if let Err(e) = tui::run_tui(log_rx, root).await {
             eprintln!("{} {}", "error:".red().bold(), e);
             std::process::exit(1);
         }

@@ -52,7 +52,8 @@ Run `cite-cli` with no arguments to enter the TUI:
 | `doctor` | Validate project, metadata, files, assets, and config |
 | `lint` | Check content quality (word count, structure) and media quality (bitrate, duration, format) |
 | `build` | Compile project → `build/content.json` (incremental) |
-| `deploy` | Upload bundle to Supabase with verification |
+| `deploy`                   | Upload bundle to Supabase with verification                                       |
+| `deploy --staging`         | Deploy to local cite.db without Supabase                                          |
 | `status` | Show project health and local analytics |
 | `clean` | Remove build artifacts and cache |
 | `rollback <deployment-id>` | Remove a specific deployment from Supabase |
@@ -60,7 +61,8 @@ Run `cite-cli` with no arguments to enter the TUI:
 | `upgrade` | Self-update CLI |
 | `uninstall` | Remove CLI |
 
-> Global options: `--path <dir>`, `--json`, `--quiet`, `--verbose`, `--dry-run`.
+> Global options (all commands): `--path <dir>`, `--json`, `--quiet`, `--verbose`, `--dry-run`.
+> Command-specific: `build --force`, `deploy --staging`, `login --email --password`, `rollback <id>`, `uninstall --force`.
 
 ## Project Structure
 
@@ -90,7 +92,7 @@ podcasts:
 
 ## Local Analytics
 
-cite-cli maintains a local SQLite database at `.cite/analytics.db` for:
+cite-cli maintains a local database at `~/.cite/cite.db` for:
 
 * Compiler cache (file hashes, UUID mappings)
 * Build and deployment history

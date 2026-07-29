@@ -190,19 +190,22 @@ pub fn discover_projects(root: &Path) -> Vec<PathBuf> {
     let mut projects = Vec::new();
 
     if root.join("cite.toml").exists() {
-        projects.push(root.to_path_buf());
+        let canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        projects.push(canon);
     }
 
     if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {
             let p = entry.path();
             if p.is_dir() && p != root && p.join("cite.toml").exists() {
-                projects.push(p);
+                let canon = p.canonicalize().unwrap_or(p);
+                projects.push(canon);
             }
         }
     }
 
     projects.sort();
+    projects.dedup();
     projects
 }
 
@@ -221,9 +224,10 @@ mod tests {
     fn test_discover_projects_current_dir() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("cite.toml"), "[project]\nname = \"test\"\n").unwrap();
+        let expected = dir.path().canonicalize().unwrap();
         let projects = discover_projects(dir.path());
         assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0], dir.path());
+        assert_eq!(projects[0], expected);
     }
 
     #[test]
@@ -232,9 +236,10 @@ mod tests {
         let sub = dir.path().join("sub");
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("cite.toml"), "[project]\nname = \"sub\"\n").unwrap();
+        let expected = sub.canonicalize().unwrap();
         let projects = discover_projects(dir.path());
         assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0], sub);
+        assert_eq!(projects[0], expected);
     }
 
     #[test]

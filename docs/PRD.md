@@ -136,7 +136,8 @@ Rules:
 | `doctor`                   | Validate project, metadata, content, and assets |
 | `lint`                     | Analyze content and media quality               |
 | `build`                    | Compile project into `build/content.json`       |
-| `deploy`                   | Upload bundle and synchronize backend           |
+| `deploy`                   | Upload bundle and synchronize Supabase backend                                  |
+| `deploy --staging`        | Deploy to local cite.db without Supabase                                        |
 | `status`                   | Show project health and analytics               |
 | `clean`                    | Remove build artifacts and cache                |
 | `rollback <deployment-id>` | Remove deployment data from Supabase            |
@@ -144,21 +145,35 @@ Rules:
 | `upgrade`                  | Update CLI                                      |
 | `uninstall`                | Remove CLI                                      |
 
-### Interactive Terminal UI
+### Options
 
-Running `cite-cli` with no command-line arguments (or with `--tui` flag) enters interactive ratatui-based terminal interface.
-
-Global options:
+**Global options** (available on all commands):
 
 ```
---path <path>               Path to project (default: current directory)
---quiet                     Suppress output
---verbose                   Detailed output
---json                      Machine-readable JSON output
---dry-run                   Preview changes without executing
+--path <path>    Path to project (default: current directory)
+-v, --verbose    Detailed output
+-q, --quiet      Suppress output
+--json           Machine-readable JSON output
+--dry-run        Preview changes without executing
 ```
 
-Commands provide stable exit codes for automation.
+**Command-specific options:**
+
+| Command                    | Options                                              |
+| -------------------------- | ---------------------------------------------------- |
+| `init <name>`              |                                                       |
+| `doctor`                   |                                                       |
+| `lint`                     |                                                       |
+| `build`                    | `--force`                                             |
+| `deploy`                   | `--staging` (deploy to local cite.db instead of Supabase) |
+| `status`                   |                                                       |
+| `clean`                    |                                                       |
+| `rollback <deployment-id>` |                                                       |
+| `login`                    | `--email <email> --password <password>`               |
+| `upgrade`                  |                                                       |
+| `uninstall`                | `--force`                                             |
+
+All commands provide stable exit codes for automation.
 
 ---
 
@@ -307,20 +322,13 @@ my-project/
 └── build/
 ```
 
-This structure is fixed. The `.cite/` directory (created automatically) contains:
-
-```
-.cite/
-├── analytics.db          # Local SQLite database
-├── credentials.toml      # (Optional: project-level credentials)
-└── cache/                # Compiler cache
-```
+This structure is fixed. A local database at `~/.cite/cite.db` stores analytics, cache, and history.
 
 ---
 
 # 9. Local Analytics Database
 
-cite-cli maintains a local SQLite database at `.cite/analytics.db` for offline analytics, caching, and history. The database is created during `init` and updated by `build` and `deploy` commands. It is portable and human-inspectable.
+cite-cli maintains a local database at `~/.cite/cite.db` for offline analytics, caching, and history. The database is created on first run and updated by `build` and `deploy` commands.
 
 Database schema is initialized on first run and migrated automatically on CLI upgrades.
 
@@ -644,7 +652,8 @@ Credentials are never stored in `cite.toml` or project directories.
 * media-aware processing (audio/image metadata extracted automatically)
 * reproducible compiler output (same files + same compiler version = same JSON)
 * remote-only deployment (all uploads go to Supabase, no local staging)
-* database-independent storage (SQLite is abstracted via standard SQL)
+* local staging deployment (`--staging` writes to cite.db for testing)
+* database-independent storage (local database abstracted via standard SQL)
 
 ---
 

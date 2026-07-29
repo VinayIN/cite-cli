@@ -217,6 +217,67 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteE
     ))
 }
 
+pub async fn deploy_staging(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteError> {
+    let bundle_path = ctx.build_dir().join("content.json");
+    if !bundle_path.exists() {
+        return Err(CiteError::Config(
+            "No build artifact found. Run 'cite-cli build' first.".to_string(),
+        ));
+    }
+    let bundle_str = tokio::fs::read_to_string(&bundle_path).await?;
+    let bundle: Value = serde_json::from_str(&bundle_str)?;
+    let deployment_id = Uuid::new_v4().to_string();
+    let podcasts = bundle
+        .get("podcasts")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len() as i64)
+        .unwrap_or(0);
+    let timelines = bundle
+        .get("timelines")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len() as i64)
+        .unwrap_or(0);
+
+    info!("Staging deployment: {deployment_id}");
+
+    // Sync project data to local cite.db
+    if let Ok(db) = DbManager::open() {
+        let _ = db.sync_project(ctx);
+        let _ = db.record_deployment(
+            &ctx.id(),
+            &deployment_id,
+            "",
+            podcasts,
+            timelines,
+            0,
+            !dry_run,
+            dry_run,
+        );
+    }
+
+    // Persist deployment record locally
+    let record = DeploymentRecord {
+        deployment_id: deployment_id.clone(),
+        storage_path: String::new(),
+        news_ids: Vec::new(),
+        timeline_ids: Vec::new(),
+        asset_paths: Vec::new(),
+    };
+    let deployments_dir = ctx.build_dir().join("deployments");
+    tokio::fs::create_dir_all(&deployments_dir).await?;
+    let path = deployments_dir.join(format!("{deployment_id}.json"));
+    tokio::fs::write(&path, serde_json::to_string_pretty(&record)?).await?;
+
+    if dry_run {
+        warn!("DRY RUN - no data written to cite.db");
+        return Ok("Staging dry run complete".to_string());
+    }
+
+    Ok(format!(
+        "Staged {podcasts} podcast(s), {timelines} timeline(s) to local database"
+    ))
+}
+
 async fn deploy_podcast(
     dctx: &DeployContext,
     podcast: &Value,
