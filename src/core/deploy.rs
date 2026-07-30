@@ -9,6 +9,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::core::CiteError;
+use crate::core::compiler::{BundlePodcast, BundleTimeline};
 use crate::core::credentials;
 use crate::core::db::DbManager;
 use crate::core::manifest::BackendConfig;
@@ -110,29 +111,12 @@ pub async fn deploy(db: &DbManager, ctx: &ProjectContext, dry_run: bool) -> Resu
         ));
     }
     let bundle_str = tokio::fs::read_to_string(&bundle_path).await?;
-    let bundle: Value = serde_json::from_str(&bundle_str)?;
+    let bundle: crate::core::compiler::ContentBundle = serde_json::from_str(&bundle_str)?;
     let deployment_id = Uuid::new_v4().to_string();
-    let project_name = bundle
-        .get("project")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let podcasts = bundle
-        .get("podcasts")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let timelines = bundle
-        .get("timelines")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let artist_id = bundle
-        .get("artist_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let project_name = bundle.project.clone();
+    let podcasts = bundle.podcasts.clone();
+    let timelines = bundle.timelines.clone();
+    let artist_id = bundle.artist_id.trim().to_string();
 
     info!("Deploying: {deployment_id}");
 
@@ -166,7 +150,7 @@ pub async fn deploy(db: &DbManager, ctx: &ProjectContext, dry_run: bool) -> Resu
     })?;
     let dctx = build_context(ctx, &backend, project_name.clone(), artist_id)?;
     let storage_path = format!("{artist_id}/{project_name}/{deployment_id}.json");
-    let bundle_bytes = serde_json::to_vec_pretty(&bundle)?;
+    let bundle_json = serde_json::to_vec_pretty(&bundle)?;
 
     let mut record = DeploymentRecord {
         deployment_id: deployment_id.clone(),
@@ -189,7 +173,7 @@ pub async fn deploy(db: &DbManager, ctx: &ProjectContext, dry_run: bool) -> Resu
     record.timeline_ids = timeline_ids;
 
     let public_bundle_url =
-        upload_bytes(&dctx, &storage_path, &bundle_bytes, "application/json").await?;
+        upload_bytes(&dctx, &storage_path, &bundle_json, "application/json").await?;
     info!("Uploaded bundle to {public_bundle_url}");
 
     persist_deployment_record(ctx, &record).await?;
@@ -225,18 +209,10 @@ pub async fn deploy_staging(db: &DbManager, ctx: &ProjectContext, dry_run: bool)
         ));
     }
     let bundle_str = tokio::fs::read_to_string(&bundle_path).await?;
-    let bundle: Value = serde_json::from_str(&bundle_str)?;
+    let bundle: crate::core::compiler::ContentBundle = serde_json::from_str(&bundle_str)?;
     let deployment_id = Uuid::new_v4().to_string();
-    let podcasts = bundle
-        .get("podcasts")
-        .and_then(|v| v.as_array())
-        .map(|a| a.len() as i64)
-        .unwrap_or(0);
-    let timelines = bundle
-        .get("timelines")
-        .and_then(|v| v.as_array())
-        .map(|a| a.len() as i64)
-        .unwrap_or(0);
+    let podcasts = bundle.podcasts.len() as i64;
+    let timelines = bundle.timelines.len() as i64;
 
     info!("Staging deployment: {deployment_id}");
 
@@ -279,28 +255,21 @@ pub async fn deploy_staging(db: &DbManager, ctx: &ProjectContext, dry_run: bool)
 
 async fn deploy_podcast(
     dctx: &DeployContext,
-    podcast: &Value,
+    podcast: &BundlePodcast,
     timeline_ids: &[i64],
     artist_id: Uuid,
     plan_id: i64,
 ) -> Result<DeployedPodcast, CiteError> {
-    let title = podcast
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Untitled");
-    let podcast_id = podcast
-        .get("id")
-        .and_then(|v| v.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(title);
-    let content = podcast.get("content").and_then(|v| v.as_str());
+    let title = &podcast.podcast.title;
+    let podcast_id = &podcast.id;
+    let content = podcast.content.as_deref();
     let category_id =
-        ensure_category_id(dctx, podcast.get("category").and_then(|v| v.as_str())).await?;
+        ensure_category_id(dctx, podcast.podcast.category.as_deref()).await?;
 
-    let fallback_url = format!("cite://podcasts/{}", podcast_id);
+    let fallback_url = format!("cite://podcasts/{podcast_id}");
     let url_id = ensure_url_id(
         dctx,
-        podcast.get("source_url").and_then(|v| v.as_str()),
+        podcast.podcast.source_url.as_deref(),
         &fallback_url,
         content.map(word_count),
     )
@@ -317,7 +286,7 @@ async fn deploy_podcast(
 
     if let Some(asset) = upload_optional_asset(
         dctx,
-        podcast.get("thumbnail").and_then(|v| v.as_str()),
+        podcast.podcast.thumbnail.as_deref(),
         "image",
     )
     .await?
@@ -328,7 +297,7 @@ async fn deploy_podcast(
     }
 
     if let Some(audio) =
-        upload_optional_asset(dctx, podcast.get("audio").and_then(|v| v.as_str()), "audio").await?
+        upload_optional_asset(dctx, podcast.podcast.audio.as_deref(), "audio").await?
     {
         insert_podcast_row(dctx, news_id, title, &audio.public_url, plan_id).await?;
         info!("Created podcast: {title}");
@@ -343,24 +312,17 @@ async fn deploy_podcast(
 
 async fn deploy_timelines(
     dctx: &DeployContext,
-    timeline_groups: &[Value],
+    timeline_groups: &[BundleTimeline],
 ) -> Result<Vec<i64>, CiteError> {
     let mut timeline_ids = Vec::new();
 
     for group in timeline_groups {
-        let Some(entries) = group.get("entries").and_then(|v| v.as_array()) else {
-            continue;
-        };
-
-        for entry in entries {
-            let title = entry
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Untitled");
-            let date = entry.get("date").and_then(|v| v.as_str()).unwrap_or("");
-            let summary = entry.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+        for entry in &group.entries {
+            let title = &entry.title;
+            let date = entry.date.as_deref().unwrap_or("");
+            let summary = entry.summary.as_deref().unwrap_or("");
             let description = format!("Date: {date}\nSummary: {summary}");
-            let url_id = if let Some(url) = entry.get("url").and_then(|v| v.as_str()) {
+            let url_id = if let Some(url) = entry.url.as_deref() {
                 Some(ensure_url_id(dctx, Some(url), url, None).await?)
             } else {
                 None
@@ -560,20 +522,24 @@ fn resolve_bearer(backend: &BackendConfig, session: Option<&Session>) -> Result<
 }
 
 pub async fn login(
-    ctx: &ProjectContext,
+    creds: Option<credentials::SupabaseCredentials>,
+    backend_config: Option<crate::core::manifest::BackendConfig>,
     email: Option<String>,
     password: Option<String>,
 ) -> Result<(), CiteError> {
-    let creds = credentials::load_credentials().or_else(|_| {
-        if let Some(b) = &ctx.manifest.backend {
-            Ok(credentials::SupabaseCredentials {
-                url: b.staging_url.clone().unwrap_or_default(),
-                api_key: b.staging_service_key.clone().unwrap_or_default(),
-            })
-        } else {
-            prompt_credentials()
-        }
-    })?;
+    let creds = match creds {
+        Some(c) => c,
+        None => credentials::load_credentials().or_else(|_| {
+            if let Some(b) = backend_config {
+                Ok(credentials::SupabaseCredentials {
+                    url: b.staging_url.unwrap_or_default(),
+                    api_key: b.staging_service_key.unwrap_or_default(),
+                })
+            } else {
+                prompt_credentials()
+            }
+        })?,
+    };
 
     if creds.api_key.is_empty() {
         return Err(CiteError::Auth(

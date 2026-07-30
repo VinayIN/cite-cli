@@ -55,12 +55,10 @@ Run `cite-cli` with no arguments to enter the TUI:
 | Command                    | Description                                                                                 |
 | -------------------------- | ------------------------------------------------------------------------------------------- |
 | `init <name>`              | Create project structure                                                                    |
-| `doctor`                   | Validate project, metadata, files, assets, and config                                       |
-| `lint`                     | Check content quality (word count, structure) and media quality (bitrate, duration, format) |
+| `doctor`                   | Validate project, metadata, files, assets, config, content quality, and media; show project health and local analytics |
 | `build`                    | Compile project → `build/content.json` (incremental)                                        |
 | `deploy`                   | Upload bundle to Supabase with verification                                                 |
 | `deploy --staging`         | Deploy to local cite.db instead of Supabase                                                 |
-| `status`                   | Show project health and local analytics                                                     |
 | `clean`                    | Remove build artifacts and cache                                                            |
 | `rollback <deployment-id>` | Roll back to a previous deployment                                                          |
 | `login`                    | Authenticate with Supabase credentials                                                      |
@@ -68,7 +66,7 @@ Run `cite-cli` with no arguments to enter the TUI:
 | `uninstall`                | Remove CLI                                                                                  |
 
 > Global options (all commands): `--path <dir>`, `--json`, `--quiet`, `--verbose`, `--dry-run`.
-> Command-specific: `build --force`, `deploy --staging`, `login --email --password`, `rollback <id>`, `uninstall --force`.
+> Command-specific: `doctor --json`, `build --force`, `deploy --staging`, `login --email --password`, `rollback <id>`, `uninstall --force`.
 
 ## Project Structure
 

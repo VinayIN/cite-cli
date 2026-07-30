@@ -44,7 +44,6 @@ pub enum CliCommand {
     Init {
         name: String,
     },
-    Lint,
     Build {
         #[arg(long)]
         force: bool,
@@ -59,7 +58,6 @@ pub enum CliCommand {
         #[arg(long)]
         password: Option<String>,
     },
-    Status,
     Doctor,
     Clean,
     Rollback {
@@ -113,32 +111,6 @@ impl CliCommand {
                         "{}",
                         format!("Project '{name}' ready at {}", root.display()).green()
                     );
-                }
-                Ok(())
-            }
-            CliCommand::Lint => {
-                let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
-                else {
-                    return Ok(());
-                };
-                let multi = projects.len() > 1;
-                let mut has_warnings = false;
-                for ctx in &projects {
-                    if multi {
-                        println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
-                    }
-                    let outcome = doctor::lint_all(ctx);
-                    if cli.json {
-                        print_json(&outcome);
-                    } else {
-                        outcome.emit();
-                    }
-                    if outcome.has_warnings() {
-                        has_warnings = true;
-                    }
-                }
-                if !cli.json && !has_warnings {
-                    println!("{}", "Lint complete — no issues found".green());
                 }
                 Ok(())
             }
@@ -259,34 +231,8 @@ impl CliCommand {
                 }
                 Ok(())
             }
-            CliCommand::Status => {
-                let db = DbManager::open().await?;
-                let Some(projects) = load_projects(path, "No projects found")? else {
-                    return Ok(());
-                };
-                let multi = projects.len() > 1;
-                for ctx in &projects {
-                    if multi {
-                        println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
-                    } else if !cli.json {
-                        info!("Project Status");
-                    }
-                    if cli.json {
-                        print_json(
-                            &serde_json::json!({"project": ctx.manifest.project.name, "root": ctx.root.to_string_lossy(), "podcasts": ctx.metadata.podcasts.len()}),
-                        );
-                    } else {
-                        project::print_status(&db, ctx).await;
-                    }
-                }
-                if !cli.json {
-                    println!("{}", "Status complete".green());
-                }
-                Ok(())
-            }
             CliCommand::Doctor => {
                 let db = DbManager::open().await?;
-                let root = PathBuf::from(path);
                 let Some(projects) = load_projects(path, "")? else {
                     if cli.json {
                         print_json(
@@ -294,8 +240,8 @@ impl CliCommand {
                         );
                     } else {
                         info!("Running diagnostics");
-                        doctor::check_file(&root, "cite.toml", "run 'cite-cli init'");
-                        doctor::check_file(&root, "metadata.yml", "");
+                        info!("cite.toml: missing (run 'cite-cli init')");
+                        info!("metadata.yml: missing");
                     }
                     return Ok(());
                 };
@@ -320,6 +266,9 @@ impl CliCommand {
                     }
                     if outcome.has_warnings() {
                         has_warnings = true;
+                    }
+                    if !cli.json {
+                        project::print_status(&db, ctx).await;
                     }
                 }
                 if cli.json {
@@ -368,9 +317,14 @@ impl CliCommand {
                 Ok(())
             }
             CliCommand::Login { email, password } => {
-                let root = PathBuf::from(path);
-                let ctx = project::ProjectContext::load(&root)?;
-                deploy::login(&ctx, email, password).await?;
+                let backend = PathBuf::from(path).canonicalize().ok().and_then(|root| {
+                    if root.join("cite.toml").exists() {
+                        project::ProjectContext::load(&root).ok().and_then(|ctx| ctx.manifest.backend)
+                    } else {
+                        None
+                    }
+                });
+                deploy::login(None, backend, email, password).await?;
                 println!("{}", "Login complete".green());
                 Ok(())
             }

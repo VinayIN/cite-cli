@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::path::Path;
 
 use serde::Serialize;
 use tracing::{error, info, warn};
@@ -128,17 +127,6 @@ fn collect_findings(
             warnings,
             infos,
         }
-    }
-}
-
-pub fn check_file(root: &Path, filename: &str, hint: &str) {
-    let path = root.join(filename);
-    if path.exists() {
-        info!("{filename} found");
-    } else if hint.is_empty() {
-        warn!("{filename} not found");
-    } else {
-        warn!("{filename} not found - {hint}");
     }
 }
 

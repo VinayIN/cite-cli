@@ -103,7 +103,6 @@ podcasts:
                 thumbnail: Some("assets/image/p.jpg".into()),
                 audio: Some("assets/audio/p.mp3".into()),
                 citation: Some("content/p.bib".into()),
-                ..Default::default()
             }],
         };
 

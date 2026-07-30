@@ -154,10 +154,10 @@ fn doctor_catches_missing_metadata() {
     assert!(stderr.contains("not found"));
 }
 
-// ── lint ────────────────────────────────────────────────────────
+// ── doctor (includes lint checks) ───────────────────────────────
 
 #[test]
-fn lint_warns_on_short_content() {
+fn doctor_warns_on_short_content() {
     let h = ProjectHarness::new("short-content");
     h.write_content("content/a.md", "Hi");
     h.write_metadata(
@@ -167,7 +167,7 @@ podcasts:
     file: content/a.md
 "#,
     );
-    let (_, stderr, ok) = h.run(&["lint"]);
+    let (_, stderr, ok) = h.run(&["doctor"]);
     assert!(ok);
     assert!(stderr.contains("low word count") || stderr.contains("very short"));
 }
@@ -350,7 +350,7 @@ podcasts:
 // ── status ──────────────────────────────────────────────────────
 
 #[test]
-fn status_shows_project_info() {
+fn doctor_shows_project_info_with_status() {
     let h = ProjectHarness::new("status-test");
     h.write_content("content/a.md", "# Content");
     h.write_metadata(
@@ -361,13 +361,13 @@ podcasts:
 "#,
     );
 
-    let stderr = h.run_ok(&["status"]);
+    let stderr = h.run_ok(&["doctor"]);
     assert!(stderr.contains("status-test"));
     assert!(stderr.contains("Artist ID"));
 
     h.run_ok(&["build"]);
 
-    let stderr = h.run_ok(&["status"]);
+    let stderr = h.run_ok(&["doctor"]);
     assert!(stderr.contains("Podcasts: 1"));
 }
 
@@ -382,7 +382,7 @@ fn doctor_detects_missing_project() {
         &db_path,
     );
     assert!(ok);
-    assert!(stderr.contains("cite.toml not found"));
+    assert!(stderr.contains("cite.toml: missing"));
 }
 
 #[test]
@@ -477,12 +477,7 @@ podcasts:
     );
 
     h.run_ok(&["doctor"]);
-    h.run_ok(&["lint"]);
     h.run_ok(&["build"]);
-
-    let stderr = h.run_ok(&["status"]);
-    assert!(stderr.contains("Artist ID"));
-    assert!(stderr.contains("Podcasts: 2"));
     let bundle = h.read_bundle();
     assert_eq!(bundle["project"], "e2e");
     assert_eq!(bundle["podcasts"].as_array().unwrap().len(), 2);
@@ -537,13 +532,4 @@ podcasts:
     assert!(ok);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert!(parsed.is_array());
-
-    let (stdout, _, ok) = h.run(&["status", "--json"]);
-    assert!(ok);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert!(parsed.is_object());
-
-    let (stdout, _, ok) = h.run(&["lint", "--json"]);
-    assert!(ok);
-    let _parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
 }

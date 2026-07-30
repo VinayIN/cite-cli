@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::formats::FormatOptions;
@@ -10,7 +10,7 @@ use symphonia::core::meta::MetadataOptions;
 
 use crate::core::CiteError;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioMeta {
     pub duration_secs: f64,
     pub format: String,
@@ -22,7 +22,7 @@ pub struct AudioMeta {
     pub sha256: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageMeta {
     pub format: String,
     pub width: u32,

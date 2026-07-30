@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::core::CiteError;
@@ -11,8 +11,8 @@ use crate::core::media::{AudioMeta, ImageMeta, extract_audio, extract_image};
 use crate::core::metadata::{Podcast, TimelineEntry};
 use crate::core::project::ProjectContext;
 
-#[derive(Debug, Clone, Serialize)]
-struct ContentBundle {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContentBundle {
     pub compiler_version: f64,
     pub project: String,
     pub artist_id: String,
@@ -20,8 +20,8 @@ struct ContentBundle {
     pub timelines: Vec<BundleTimeline>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct BundlePodcast {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundlePodcast {
     pub id: String,
     #[serde(flatten)]
     pub podcast: Podcast,
@@ -32,8 +32,8 @@ struct BundlePodcast {
     pub thumbnail_meta: Option<ImageMeta>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct BundleTimeline {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundleTimeline {
     pub id: String,
     pub entries: Vec<TimelineEntry>,
 }
