@@ -742,12 +742,13 @@ fn collect_files(base: &Path, dir: &Path, files: &mut Vec<PathBuf>) {
 
 fn block(title: impl Into<String>, focused: bool) -> Block<'static> {
     let border_style = if focused {
-        Style::new().fg(Color::Cyan)
-    } else {
         Style::new()
+    } else {
+        Style::new().dim()
     };
     Block::default()
         .borders(Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
         .title(title.into())
         .border_style(border_style)
 }
@@ -918,7 +919,7 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut AppState) {
             render_categorized_project_list(frame, left, app);
 
             let [tabs_area, details_logs_area] =
-                Layout::vertical([Constraint::Percentage(10), Constraint::Percentage(90)])
+                Layout::vertical([Constraint::Percentage(7), Constraint::Percentage(93)])
                     .areas(middle);
 
             let [details_area, logs_area] =
@@ -971,8 +972,7 @@ fn render_categorized_project_list(frame: &mut Frame, area: Rect, app: &mut AppS
                 .fg(Color::Black)
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▸ ");
+        );
     frame.render_stateful_widget(list, area, &mut app.projects_state);
 }
 
@@ -993,17 +993,15 @@ fn render_cmd_doc(frame: &mut Frame, area: Rect, app: &AppState) {
     let is_focused = matches!(app.focus, Focus::Details);
     let has_args = !cmd.args_hint.is_empty();
 
-    let mut lines = vec![
-        Line::from(Span::styled(cmd.label, Style::new().bold())),
-        Line::from(""),
-        Line::from(cmd.desc),
-    ];
+    let mut lines = vec![Line::from(vec![
+        Span::styled(format!("{}: ", cmd.label), Style::new().bold()),
+        Span::raw(cmd.desc),
+    ])];
 
     if has_args {
         lines.extend_from_slice(&[
             Line::from(""),
-            Line::from(Span::styled("Arguments:", Style::new().bold())),
-            Line::from(Span::raw(format!("  {}", cmd.args_hint))),
+            Line::from(format!("Arguments: {}", cmd.args_hint)),
             Line::from(""),
         ]);
         let input_text = if app.arg_input.is_empty() {
@@ -1502,8 +1500,13 @@ async fn exec_init(cwd: PathBuf, raw: String) {
 }
 
 async fn exec_build(root: Option<PathBuf>, raw: String) {
-    let Some(root) = root else { error!("No project selected"); return };
-    let Some(ctx) = load_context(&root).await else { return };
+    let Some(root) = root else {
+        error!("No project selected");
+        return;
+    };
+    let Some(ctx) = load_context(&root).await else {
+        return;
+    };
     let Some(db) = open_db().await else { return };
     let force = raw.split_whitespace().any(|w| w == "--force");
     match compiler::compile(&db, &ctx, force).await {
@@ -1513,21 +1516,36 @@ async fn exec_build(root: Option<PathBuf>, raw: String) {
 }
 
 async fn exec_lint(root: Option<PathBuf>, _raw: String) {
-    let Some(root) = root else { error!("No project selected"); return };
-    let Some(ctx) = load_context(&root).await else { return };
+    let Some(root) = root else {
+        error!("No project selected");
+        return;
+    };
+    let Some(ctx) = load_context(&root).await else {
+        return;
+    };
     doctor::lint_all(&ctx).emit();
 }
 
 async fn exec_status(root: Option<PathBuf>, _raw: String) {
-    let Some(root) = root else { error!("No project selected"); return };
-    let Some(ctx) = load_context(&root).await else { return };
+    let Some(root) = root else {
+        error!("No project selected");
+        return;
+    };
+    let Some(ctx) = load_context(&root).await else {
+        return;
+    };
     let Some(db) = open_db().await else { return };
     project::print_status(&db, &ctx).await;
 }
 
 async fn exec_doctor(root: Option<PathBuf>, _raw: String) {
-    let Some(root) = root else { error!("No project selected"); return };
-    let Some(ctx) = load_context(&root).await else { return };
+    let Some(root) = root else {
+        error!("No project selected");
+        return;
+    };
+    let Some(ctx) = load_context(&root).await else {
+        return;
+    };
     let Some(db) = open_db().await else { return };
     match doctor::run(&db, &ctx).await {
         Ok(o) => {
@@ -1541,8 +1559,13 @@ async fn exec_doctor(root: Option<PathBuf>, _raw: String) {
 }
 
 async fn exec_deploy(root: Option<PathBuf>, raw: String) {
-    let Some(root) = root else { error!("No project selected"); return };
-    let Some(ctx) = load_context(&root).await else { return };
+    let Some(root) = root else {
+        error!("No project selected");
+        return;
+    };
+    let Some(ctx) = load_context(&root).await else {
+        return;
+    };
     let Some(db) = open_db().await else { return };
     let dry_run = raw.split_whitespace().any(|w| w == "--dry-run");
     let staging = raw.split_whitespace().any(|w| w == "--staging");
@@ -1565,8 +1588,13 @@ async fn exec_rollback(root: Option<PathBuf>, raw: String) {
         error!("No deployment ID provided");
         return;
     }
-    let Some(root) = root else { error!("No project selected"); return };
-    let Some(ctx) = load_context(&root).await else { return };
+    let Some(root) = root else {
+        error!("No project selected");
+        return;
+    };
+    let Some(ctx) = load_context(&root).await else {
+        return;
+    };
     match deploy::rollback(&ctx, id).await {
         Ok(msg) => info!("{msg}"),
         Err(e) => error!("Rollback failed: {e}"),
@@ -1574,8 +1602,13 @@ async fn exec_rollback(root: Option<PathBuf>, raw: String) {
 }
 
 async fn exec_clean(root: Option<PathBuf>, _raw: String) {
-    let Some(root) = root else { error!("No project selected"); return };
-    let Some(ctx) = load_context(&root).await else { return };
+    let Some(root) = root else {
+        error!("No project selected");
+        return;
+    };
+    let Some(ctx) = load_context(&root).await else {
+        return;
+    };
     let Some(db) = open_db().await else { return };
     match ctx.clean(&db).await {
         Ok(()) => info!("Cleaned build artifacts"),
