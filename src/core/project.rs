@@ -33,6 +33,10 @@ pub struct DeployReport {
 pub struct StoredPodcast {
     pub title: String,
     pub word_count: i64,
+    pub category: String,
+    pub file: String,
+    pub has_audio: bool,
+    pub has_thumbnail: bool,
 }
 
 /// A timeline entry from the DB
@@ -40,6 +44,8 @@ pub struct StoredPodcast {
 pub struct StoredTimeline {
     pub date: Option<String>,
     pub title: String,
+    pub url: Option<String>,
+    pub entry_type: Option<String>,
 }
 
 /// A deployment record from the DB
@@ -48,6 +54,8 @@ pub struct StoredDeployment {
     pub deployment_id: String,
     pub deployed_at: String,
     pub success: bool,
+    pub news_count: i64,
+    pub asset_count: i64,
 }
 
 /// A build record from the DB
@@ -58,6 +66,7 @@ pub struct StoredBuild {
     pub total_words: i64,
     pub duration_ms: i64,
     pub was_incremental: bool,
+    pub built_at: String,
 }
 
 /// Per-project analytics from the DB
@@ -70,8 +79,6 @@ pub struct ProjectStats {
     pub last_built: Option<String>,
     pub deployment_count: i64,
     pub last_deployed: Option<String>,
-    pub podcasts_by_month: Vec<(String, i64)>,
-    pub citations_by_decade: Vec<(String, i64)>,
 }
 
 /// Cross-project analytics from the DB
@@ -142,20 +149,18 @@ impl ProjectContext {
             .collect()
     }
 
-    pub async fn clean(&self) -> Result<(), CiteError> {
+    pub async fn clean(&self, db: &crate::core::db::DbManager) -> Result<(), CiteError> {
         let build_dir = self.build_dir();
         if build_dir.exists() {
             tokio::fs::remove_dir_all(&build_dir).await?;
         }
 
-        if let Ok(db) = crate::core::db::DbManager::open().await {
-            let _ = db.clear_cache(&self.id()).await;
-        }
+        let _ = db.clear_cache(&self.id()).await;
         Ok(())
     }
 }
 
-pub async fn print_status(ctx: &ProjectContext) {
+pub async fn print_status(db: &crate::core::db::DbManager, ctx: &ProjectContext) {
     info!("Name: {}", ctx.manifest.project.name);
     info!("Root: {}", ctx.root.display());
     info!("Artist ID: {}", ctx.manifest.project.artist_id);
@@ -166,45 +171,43 @@ pub async fn print_status(ctx: &ProjectContext) {
     }
     info!("Podcasts: {}", ctx.metadata.podcasts.len());
 
-    if let Ok(db) = crate::core::db::DbManager::open().await {
-        let project_id = ctx.id();
+    let project_id = ctx.id();
 
-        if let Ok(stats) = db.get_project_stats(&project_id).await {
-            info!("Total words: {}", stats.total_words);
-            info!("Timeline entries: {}", stats.timeline_count);
-            info!("Builds recorded: {}", stats.build_count);
-            if let Some(ref last) = stats.last_built {
-                info!("Last build: {last}");
-            }
-            info!("Deployments: {}", stats.deployment_count);
-            if let Some(ref last) = stats.last_deployed {
-                info!("Last deploy: {last}");
-            }
+    if let Ok(stats) = db.get_project_stats(&project_id).await {
+        info!("Total words: {}", stats.total_words);
+        info!("Timeline entries: {}", stats.timeline_count);
+        info!("Builds recorded: {}", stats.build_count);
+        if let Some(ref last) = stats.last_built {
+            info!("Last build: {last}");
         }
+        info!("Deployments: {}", stats.deployment_count);
+        if let Some(ref last) = stats.last_deployed {
+            info!("Last deploy: {last}");
+        }
+    }
 
-        if let Ok(builds) = db.get_build_history(&project_id).await
-            && let Some(b) = builds.first()
-        {
-            info!(
-                "Recent build: {} podcasts, {} timelines, {} words, {}ms ({})",
-                b.podcast_count,
-                b.timeline_count,
-                b.total_words,
-                b.duration_ms,
-                if b.was_incremental { "incr" } else { "full" },
-            );
-        }
+    if let Ok(builds) = db.get_build_history(&project_id).await
+        && let Some(b) = builds.first()
+    {
+        info!(
+            "Recent build: {} podcasts, {} timelines, {} words, {}ms ({})",
+            b.podcast_count,
+            b.timeline_count,
+            b.total_words,
+            b.duration_ms,
+            if b.was_incremental { "incr" } else { "full" },
+        );
+    }
 
-        if let Ok(deploys) = db.get_deployment_history(&project_id).await
-            && let Some(d) = deploys.first()
-        {
-            info!(
-                "Recent deploy: {} at {} ({})",
-                d.deployment_id,
-                d.deployed_at,
-                if d.success { "ok" } else { "fail" },
-            );
-        }
+    if let Ok(deploys) = db.get_deployment_history(&project_id).await
+        && let Some(d) = deploys.first()
+    {
+        info!(
+            "Recent deploy: {} at {} ({})",
+            d.deployment_id,
+            d.deployed_at,
+            if d.success { "ok" } else { "fail" },
+        );
     }
 }
 
@@ -337,10 +340,10 @@ incremental = true
         std::fs::write(dir.path().join("build").join("artifact.txt"), "data").unwrap();
         let ctx = ProjectContext::load(dir.path()).unwrap();
         assert!(ctx.build_dir().exists());
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(ctx.clean())
-            .unwrap();
+        let db_path = dir.path().join("test.db");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let db = rt.block_on(async { crate::core::db::DbManager::open_path(&db_path).await.unwrap() });
+        rt.block_on(ctx.clean(&db)).unwrap();
         assert!(!ctx.build_dir().exists());
     }
 }

@@ -80,7 +80,7 @@ impl CompileOutcome {
     }
 }
 
-pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileOutcome, CiteError> {
+pub async fn compile(db: &DbManager, ctx: &ProjectContext, force: bool) -> Result<CompileOutcome, CiteError> {
     let start = Instant::now();
     let project_id = ctx.project_id();
     let content_files = ctx.content_files();
@@ -88,7 +88,6 @@ pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileOutcome
     let current_hashes = hash_files(&content_files).await?;
 
     if !force
-        && let Ok(db) = DbManager::open().await
         && let Ok(Some(cache)) = db.load_cache(&project_id).await
         && cache.compiler_version == ctx.manifest.build.compiler_version
     {
@@ -124,24 +123,22 @@ pub async fn compile(ctx: &ProjectContext, force: bool) -> Result<CompileOutcome
 
     let was_incremental = !force && bundle.podcasts.len() as i64 > 0;
 
-    if let Ok(db) = DbManager::open().await {
-        let cv = ctx.manifest.build.compiler_version;
-        let _ = db.save_cache(&project_id, &current_hashes).await;
-        let _ = db.sync_project(ctx).await;
-        let _ = db
-            .record_build(
-                &crate::core::project::BuildRecord {
-                    project_id: project_id.clone(),
-                    compiler_version: cv,
-                    podcast_count: bundle.podcasts.len() as i64,
-                    timeline_count,
-                    total_words,
-                    duration_ms: elapsed,
-                    was_incremental,
-                },
-            )
-            .await;
-    }
+    let cv = ctx.manifest.build.compiler_version;
+    let _ = db.save_cache(&project_id, &current_hashes).await;
+    let _ = db.sync_project(ctx).await;
+    let _ = db
+        .record_build(
+            &crate::core::project::BuildRecord {
+                project_id: project_id.clone(),
+                compiler_version: cv,
+                podcast_count: bundle.podcasts.len() as i64,
+                timeline_count,
+                total_words,
+                duration_ms: elapsed,
+                was_incremental,
+            },
+        )
+        .await;
 
     let stats = CompileStats {
         podcasts: bundle.podcasts.len(),

@@ -8,10 +8,6 @@ use crate::core::CiteError;
 use crate::core::db::DbManager;
 use crate::core::project::ProjectContext;
 
-fn db_path() -> std::path::PathBuf {
-    crate::core::db::global_db_path()
-}
-
 #[derive(Serialize)]
 pub enum DoctorOutcome {
     Clean,
@@ -146,18 +142,16 @@ pub fn check_file(root: &Path, filename: &str, hint: &str) {
     }
 }
 
-pub async fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
+pub async fn run(db: &DbManager, ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
     info!("Running diagnostics");
 
-    if let Ok(db) = DbManager::open().await {
-        info!("Database: connected ({})", db_path().display());
-        let project_id = ctx.project_id();
-        if let Ok(Some(_)) = db.load_cache(&project_id).await {
-            info!("Cache: present in database");
-        }
+    info!("Database: connected");
+    let project_id = ctx.project_id();
+    if let Ok(Some(_)) = db.load_cache(&project_id).await {
+        info!("Cache: present in database");
     }
 
-    let mut outcome = validate_all(ctx).await;
+    let mut outcome = validate_all(db, ctx).await;
     outcome.merge(lint_all(ctx));
 
     if ctx
@@ -212,12 +206,12 @@ pub async fn run(ctx: &ProjectContext) -> Result<DoctorOutcome, CiteError> {
 
 // ── Comprehensive Validation (PRD Section 12) ──
 
-async fn validate_all(ctx: &ProjectContext) -> DoctorOutcome {
+async fn validate_all(db: &DbManager, ctx: &ProjectContext) -> DoctorOutcome {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     let mut infos = Vec::new();
 
-    validate_project_structure(ctx, &mut errors, &mut warnings, &mut infos).await;
+    validate_project_structure(db, ctx, &mut errors, &mut warnings, &mut infos).await;
     validate_metadata(ctx, &mut errors, &mut warnings);
     validate_markdown(ctx, &mut errors, &mut warnings);
     validate_audio(ctx, &mut errors, &mut warnings);
@@ -229,6 +223,7 @@ async fn validate_all(ctx: &ProjectContext) -> DoctorOutcome {
 }
 
 async fn validate_project_structure(
+    db: &DbManager,
     ctx: &ProjectContext,
     errors: &mut Vec<String>,
     warnings: &mut Vec<String>,
@@ -270,14 +265,12 @@ async fn validate_project_structure(
         infos.push(".cite/ directory found".to_string());
     }
 
-    if let Ok(db) = DbManager::open().await {
-        let project_id = ctx.project_id();
-        if let Ok(stats) = db.get_project_stats(&project_id).await {
-            infos.push(format!(
-                "Database stats: {} builds, {} deployments",
-                stats.build_count, stats.deployment_count
-            ));
-        }
+    let project_id = ctx.project_id();
+    if let Ok(stats) = db.get_project_stats(&project_id).await {
+        infos.push(format!(
+            "Database stats: {} builds, {} deployments",
+            stats.build_count, stats.deployment_count
+        ));
     }
 }
 

@@ -100,7 +100,7 @@ async fn ensure_success(
     )))
 }
 
-pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteError> {
+pub async fn deploy(db: &DbManager, ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteError> {
     let backend = resolve_backend_config(ctx)?;
 
     let bundle_path = ctx.build_dir().join("content.json");
@@ -144,21 +144,19 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteE
             info!("Artist ID: {artist_id}");
         }
 
-        if let Ok(db) = DbManager::open().await {
-            let project_id = ctx.id();
-            let _ = db
-                .record_deployment(&crate::core::project::DeployReport {
-                    project_id: project_id.clone(),
-                    deployment_id: deployment_id.clone(),
-                    storage_path: "".to_string(),
-                    news_count: podcasts.len() as i64,
-                    timeline_count: timelines.len() as i64,
-                    asset_count: 0,
-                    success: true,
-                    dry_run: true,
-                })
-                .await;
-        }
+        let project_id = ctx.id();
+        let _ = db
+            .record_deployment(&crate::core::project::DeployReport {
+                project_id: project_id.clone(),
+                deployment_id: deployment_id.clone(),
+                storage_path: "".to_string(),
+                news_count: podcasts.len() as i64,
+                timeline_count: timelines.len() as i64,
+                asset_count: 0,
+                success: true,
+                dry_run: true,
+            })
+            .await;
 
         return Ok("Dry run complete".to_string());
     }
@@ -200,28 +198,26 @@ pub async fn deploy(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteE
     let timeline_count = record.timeline_ids.len() as i64;
     let asset_count = record.asset_paths.len() as i64;
 
-    if let Ok(db) = DbManager::open().await {
-        let project_id = ctx.id();
-        let _ = db
-            .record_deployment(&crate::core::project::DeployReport {
-                project_id: project_id.clone(),
-                deployment_id: deployment_id.clone(),
-                storage_path: storage_path.clone(),
-                news_count: podcast_count,
-                timeline_count,
-                asset_count,
-                success: true,
-                dry_run: false,
-            })
-            .await;
-    }
+    let project_id = ctx.id();
+    let _ = db
+        .record_deployment(&crate::core::project::DeployReport {
+            project_id: project_id.clone(),
+            deployment_id: deployment_id.clone(),
+            storage_path: storage_path.clone(),
+            news_count: podcast_count,
+            timeline_count,
+            asset_count,
+            success: true,
+            dry_run: false,
+        })
+        .await;
 
     Ok(format!(
         "Deployed {podcast_count} podcast(s), {timeline_count} timeline(s), {asset_count} asset(s)"
     ))
 }
 
-pub async fn deploy_staging(ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteError> {
+pub async fn deploy_staging(db: &DbManager, ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteError> {
     let bundle_path = ctx.build_dir().join("content.json");
     if !bundle_path.exists() {
         return Err(CiteError::Config(
@@ -244,22 +240,19 @@ pub async fn deploy_staging(ctx: &ProjectContext, dry_run: bool) -> Result<Strin
 
     info!("Staging deployment: {deployment_id}");
 
-    // Sync project data to local cite.db
-    if let Ok(db) = DbManager::open().await {
-        let _ = db.sync_project(ctx).await;
-        let _ = db
-            .record_deployment(&crate::core::project::DeployReport {
-                project_id: ctx.id(),
-                deployment_id: deployment_id.clone(),
-                storage_path: "".to_string(),
-                news_count: podcasts,
-                timeline_count: timelines,
-                asset_count: 0,
-                success: !dry_run,
-                dry_run,
-            })
-            .await;
-    }
+    let _ = db.sync_project(ctx).await;
+    let _ = db
+        .record_deployment(&crate::core::project::DeployReport {
+            project_id: ctx.id(),
+            deployment_id: deployment_id.clone(),
+            storage_path: "".to_string(),
+            news_count: podcasts,
+            timeline_count: timelines,
+            asset_count: 0,
+            success: !dry_run,
+            dry_run,
+        })
+        .await;
 
     // Persist deployment record locally
     let record = DeploymentRecord {
@@ -1357,12 +1350,14 @@ podcasts:
         std::fs::write(dir.join("assets/audio/episode.mp3"), "mp3").unwrap();
     }
 
-    async fn setup(staging_url: &str) -> (tempfile::TempDir, ProjectContext) {
+    async fn setup(staging_url: &str) -> (tempfile::TempDir, ProjectContext, DbManager) {
         let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
         write_project(dir.path(), staging_url);
         let ctx = ProjectContext::load(dir.path()).unwrap();
-        compiler::compile(&ctx, true).await.unwrap();
-        (dir, ctx)
+        let db = DbManager::open_path(&db_path).await.unwrap();
+        compiler::compile(&db, &ctx, true).await.unwrap();
+        (dir, ctx, db)
     }
 
     #[tokio::test]
@@ -1445,8 +1440,8 @@ podcasts:
             t.status(200).json_body(serde_json::json!([]));
         });
 
-        let (_dir, ctx) = setup(&base).await;
-        deploy(&ctx, false).await.expect("deploy should succeed");
+        let (_dir, ctx, db) = setup(&base).await;
+        deploy(&db, &ctx, false).await.expect("deploy should succeed");
 
         assert_eq!(news.hits(), 1, "one news row");
         assert_eq!(news_patch.hits(), 1, "thumbnail patched after upload");

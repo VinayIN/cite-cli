@@ -413,7 +413,8 @@ impl DbManager {
         let mut rows = self
             .conn
             .query(
-                "SELECT title, word_count FROM podcasts WHERE project_id = ?1 ORDER BY title",
+                "SELECT title, word_count, category, file, audio, thumbnail
+                 FROM podcasts WHERE project_id = ?1 ORDER BY title",
                 params![project_id],
             )
             .await?;
@@ -423,6 +424,10 @@ impl DbManager {
             podcasts.push(super::project::StoredPodcast {
                 title: row.get(0)?,
                 word_count: row.get(1)?,
+                category: get_opt_string(&row, 2),
+                file: row.get(3)?,
+                has_audio: !get_opt_string(&row, 4).is_empty(),
+                has_thumbnail: !get_opt_string(&row, 5).is_empty(),
             });
         }
         Ok(podcasts)
@@ -435,19 +440,23 @@ impl DbManager {
         let mut rows = self
             .conn
             .query(
-                "SELECT date, title FROM timeline_entries WHERE project_id = ?1 ORDER BY date DESC NULLS LAST",
+                "SELECT date, title, url, entry_type
+                 FROM timeline_entries WHERE project_id = ?1
+                 ORDER BY date DESC NULLS LAST",
                 params![project_id],
             )
             .await?;
 
         let mut entries = Vec::new();
         while let Some(row) = rows.next().await? {
+            let d = get_opt_string(&row, 0);
+            let u = get_opt_string(&row, 2);
+            let t = get_opt_string(&row, 3);
             entries.push(super::project::StoredTimeline {
-                date: {
-                    let val = get_opt_string(&row, 0);
-                    if val.is_empty() { None } else { Some(val) }
-                },
+                date: if d.is_empty() { None } else { Some(d) },
                 title: row.get(1)?,
+                url: if u.is_empty() { None } else { Some(u) },
+                entry_type: if t.is_empty() { None } else { Some(t) },
             });
         }
         Ok(entries)
@@ -460,7 +469,9 @@ impl DbManager {
         let mut rows = self
             .conn
             .query(
-                "SELECT deployment_id, deployed_at, success FROM deployment_history WHERE project_id = ?1 ORDER BY deployed_at DESC",
+                "SELECT deployment_id, deployed_at, success, news_count, asset_count
+                 FROM deployment_history WHERE project_id = ?1
+                 ORDER BY deployed_at DESC",
                 params![project_id],
             )
             .await?;
@@ -471,6 +482,8 @@ impl DbManager {
                 deployment_id: row.get(0)?,
                 deployed_at: row.get(1)?,
                 success: row.get::<i64>(2)? != 0,
+                news_count: row.get(3)?,
+                asset_count: row.get(4)?,
             });
         }
         Ok(deployments)
@@ -483,7 +496,7 @@ impl DbManager {
         let mut rows = self
             .conn
             .query(
-                "SELECT podcast_count, timeline_count, total_words, duration_ms, was_incremental
+                "SELECT podcast_count, timeline_count, total_words, duration_ms, was_incremental, built_at
                  FROM build_history WHERE project_id = ?1
                  ORDER BY built_at DESC
                  LIMIT 50",
@@ -499,6 +512,7 @@ impl DbManager {
                 total_words: row.get(2)?,
                 duration_ms: row.get(3)?,
                 was_incremental: row.get::<i64>(4)? != 0,
+                built_at: get_opt_string(&row, 5),
             });
         }
         Ok(builds)
@@ -598,34 +612,6 @@ impl DbManager {
             })
             .filter(|s| !s.is_empty());
 
-        let mut rows = self
-            .conn
-            .query(
-                "SELECT strftime('%Y-%m', built_at) AS month, COUNT(*)
-                 FROM build_history WHERE project_id = ?1 AND built_at IS NOT NULL
-                 GROUP BY month ORDER BY month DESC LIMIT 12",
-                params![project_id],
-            )
-            .await?;
-        let mut podcasts_by_month = Vec::new();
-        while let Some(row) = rows.next().await? {
-            podcasts_by_month.push((get_opt_string(&row, 0), row.get::<i64>(1)?));
-        }
-
-        let mut rows = self
-            .conn
-            .query(
-                "SELECT CAST((CAST(SUBSTR(date, 1, 3) AS INTEGER) / 10) * 10 AS TEXT) || 's' AS decade, COUNT(*)
-                 FROM timeline_entries WHERE project_id = ?1 AND date IS NOT NULL AND date != ''
-                 GROUP BY decade ORDER BY decade",
-                params![project_id],
-            )
-            .await?;
-        let mut citations_by_decade = Vec::new();
-        while let Some(row) = rows.next().await? {
-            citations_by_decade.push((get_opt_string(&row, 0), row.get::<i64>(1)?));
-        }
-
         Ok(super::project::ProjectStats {
             podcast_count,
             timeline_count,
@@ -634,8 +620,6 @@ impl DbManager {
             last_built,
             deployment_count,
             last_deployed,
-            podcasts_by_month,
-            citations_by_decade,
         })
     }
 

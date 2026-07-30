@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::{error, info, instrument, warn};
 
+use crate::core::db::DbManager;
 use crate::core::report::CiteError;
 use crate::core::{compiler, deploy, doctor, project, scaffold, uninstall, upgrade};
 use colored::Colorize;
@@ -142,6 +143,7 @@ impl CliCommand {
                 Ok(())
             }
             CliCommand::Build { force } => {
+                let db = DbManager::open().await?;
                 let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
@@ -152,7 +154,7 @@ impl CliCommand {
                     if multi {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
-                    match compiler::compile(ctx, force).await {
+                    match compiler::compile(&db, ctx, force).await {
                         Ok(outcome) => {
                             if cli.json {
                                 match &outcome {
@@ -191,6 +193,7 @@ impl CliCommand {
                 Ok(())
             }
             CliCommand::Deploy { staging } => {
+                let db = DbManager::open().await?;
                 let Some(projects) = load_projects(path, "No projects found (no cite.toml found)")?
                 else {
                     return Ok(());
@@ -202,7 +205,7 @@ impl CliCommand {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
                     if staging {
-                        match deploy::deploy_staging(ctx, cli.dry_run).await {
+                        match deploy::deploy_staging(&db, ctx, cli.dry_run).await {
                             Ok(msg) => {
                                 if cli.json {
                                     print_json(
@@ -224,7 +227,7 @@ impl CliCommand {
                             }
                         }
                     } else {
-                        match deploy::deploy(ctx, cli.dry_run).await {
+                        match deploy::deploy(&db, ctx, cli.dry_run).await {
                             Ok(msg) => {
                                 if cli.json {
                                     print_json(
@@ -257,6 +260,7 @@ impl CliCommand {
                 Ok(())
             }
             CliCommand::Status => {
+                let db = DbManager::open().await?;
                 let Some(projects) = load_projects(path, "No projects found")? else {
                     return Ok(());
                 };
@@ -272,7 +276,7 @@ impl CliCommand {
                             &serde_json::json!({"project": ctx.manifest.project.name, "root": ctx.root.to_string_lossy(), "podcasts": ctx.metadata.podcasts.len()}),
                         );
                     } else {
-                        project::print_status(ctx).await;
+                        project::print_status(&db, ctx).await;
                     }
                 }
                 if !cli.json {
@@ -281,6 +285,7 @@ impl CliCommand {
                 Ok(())
             }
             CliCommand::Doctor => {
+                let db = DbManager::open().await?;
                 let root = PathBuf::from(path);
                 let Some(projects) = load_projects(path, "")? else {
                     if cli.json {
@@ -302,7 +307,7 @@ impl CliCommand {
                     if multi {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
-                    let outcome = doctor::run(ctx).await?;
+                    let outcome = doctor::run(&db, ctx).await?;
                     if cli.json
                         && let Ok(v) = serde_json::to_value(&outcome)
                     {
@@ -329,6 +334,7 @@ impl CliCommand {
                 Ok(())
             }
             CliCommand::Clean => {
+                let db = DbManager::open().await?;
                 let Some(projects) = load_projects(path, "No projects found")? else {
                     return Ok(());
                 };
@@ -337,7 +343,7 @@ impl CliCommand {
                     if multi {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
-                    ctx.clean().await?;
+                    ctx.clean(&db).await?;
                     if cli.json {
                         print_json(
                             &serde_json::json!({"status": "ok", "project": ctx.manifest.project.name}),

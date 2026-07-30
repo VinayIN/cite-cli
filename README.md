@@ -3,11 +3,13 @@
 ### Quick install
 
 (MacOS/Linux only)
+
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.2/cite-cli-installer.sh | sh
 ```
 
 (Windows only)
+
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.2/cite-cli-installer.ps1 | iex"
 ```
@@ -36,30 +38,34 @@ cite-cli deploy --path my-project
 
 Run `cite-cli` with no arguments to enter the TUI:
 
-| Key | Mode |
-|-----|------|
-| `m` | Main — projects, commands, logs |
-| `s` | Analytics — project statistics and history |
-| `e` | Explorer — podcasts, timelines, builds, deployments |
+| Key                 | Action                        |
+| ------------------- | ----------------------------- |
+| `Ctrl+P`            | Toggle command palette        |
+| `Tab` / `Shift+Tab` | Cycle focus between panels    |
+| `↑` / `↓`           | Navigate lists                |
+| `Enter`             | Execute command / select file |
+| `Ctrl+r`            | Refresh project list          |
+| `←` / `→`           | Navigate commands             |
+| `Ctrl+q`            | Quit                          |
 
-> Navigation: `Tab`/`Shift+Tab` (panels), `↑`/`↓` (lists), `Enter` (execute/select), `r` (refresh), `Esc` (exit).
+> When a command with arguments is selected, type args in the Details panel then press `Enter` to execute.
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `init <name>` | Create project structure |
-| `doctor` | Validate project, metadata, files, assets, and config |
-| `lint` | Check content quality (word count, structure) and media quality (bitrate, duration, format) |
-| `build` | Compile project → `build/content.json` (incremental) |
-| `deploy`                   | Upload bundle to Supabase with verification                                       |
-| `deploy --staging`         | Deploy to local cite.db without Supabase                                          |
-| `status` | Show project health and local analytics |
-| `clean` | Remove build artifacts and cache |
-| `rollback <deployment-id>` | Remove a specific deployment from Supabase |
-| `login` | Authenticate with Supabase credentials |
-| `upgrade` | Self-update CLI |
-| `uninstall` | Remove CLI |
+| Command                    | Description                                                                                 |
+| -------------------------- | ------------------------------------------------------------------------------------------- |
+| `init <name>`              | Create project structure                                                                    |
+| `doctor`                   | Validate project, metadata, files, assets, and config                                       |
+| `lint`                     | Check content quality (word count, structure) and media quality (bitrate, duration, format) |
+| `build`                    | Compile project → `build/content.json` (incremental)                                        |
+| `deploy`                   | Upload bundle to Supabase with verification                                                 |
+| `deploy --staging`         | Deploy to local cite.db instead of Supabase                                                 |
+| `status`                   | Show project health and local analytics                                                     |
+| `clean`                    | Remove build artifacts and cache                                                            |
+| `rollback <deployment-id>` | Roll back to a previous deployment                                                          |
+| `login`                    | Authenticate with Supabase credentials                                                      |
+| `upgrade`                  | Self-update CLI                                                                             |
+| `uninstall`                | Remove CLI                                                                                  |
 
 > Global options (all commands): `--path <dir>`, `--json`, `--quiet`, `--verbose`, `--dry-run`.
 > Command-specific: `build --force`, `deploy --staging`, `login --email --password`, `rollback <id>`, `uninstall --force`.
@@ -85,20 +91,20 @@ podcasts:
     file: content/my-article.md
     source_url: "https://example.com"
     category: "artificial intelligence"
-    audio: assets/audio/episode.mp3           # optional
-    thumbnail: assets/image/thumb.jpg         # optional
-    citation: content/my-article.bib          # optional
+    audio: assets/audio/episode.mp3 # optional
+    thumbnail: assets/image/thumb.jpg # optional
+    citation: content/my-article.bib # optional
 ```
 
 ## Local Analytics
 
 cite-cli maintains a local database at `~/.cite/cite.db` for:
 
-* Compiler cache (file hashes, UUID mappings)
-* Build and deployment history
-* Project and podcast statistics (word count, reading time, audio duration)
-* Asset metadata and usage tracking
-* Offline analytics — no network required
+- Compiler cache (file hashes, UUID mappings)
+- Build and deployment history
+- Project and podcast statistics (word count, reading time, audio duration)
+- Asset metadata and usage tracking
+- Offline analytics — no network required
 
 ## Tests
 
