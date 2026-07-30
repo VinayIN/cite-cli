@@ -308,10 +308,12 @@ impl CliCommand {
                         println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
                     }
                     let outcome = doctor::run(&db, ctx).await?;
-                    if cli.json
-                        && let Ok(v) = serde_json::to_value(&outcome)
-                    {
-                        all_outcomes.push(v);
+                    if cli.json {
+                        if let Ok(v) = serde_json::to_value(&outcome) {
+                            all_outcomes.push(v);
+                        }
+                    } else {
+                        outcome.emit();
                     }
                     if outcome.has_errors() {
                         has_errors = true;

@@ -144,7 +144,7 @@ pub async fn deploy(db: &DbManager, ctx: &ProjectContext, dry_run: bool) -> Resu
             info!("Artist ID: {artist_id}");
         }
 
-        let project_id = ctx.id();
+        let project_id = ctx.project_id();
         let _ = db
             .record_deployment(&crate::core::project::DeployReport {
                 project_id: project_id.clone(),
@@ -198,7 +198,7 @@ pub async fn deploy(db: &DbManager, ctx: &ProjectContext, dry_run: bool) -> Resu
     let timeline_count = record.timeline_ids.len() as i64;
     let asset_count = record.asset_paths.len() as i64;
 
-    let project_id = ctx.id();
+    let project_id = ctx.project_id();
     let _ = db
         .record_deployment(&crate::core::project::DeployReport {
             project_id: project_id.clone(),
@@ -243,7 +243,7 @@ pub async fn deploy_staging(db: &DbManager, ctx: &ProjectContext, dry_run: bool)
     let _ = db.sync_project(ctx).await;
     let _ = db
         .record_deployment(&crate::core::project::DeployReport {
-            project_id: ctx.id(),
+            project_id: ctx.project_id(),
             deployment_id: deployment_id.clone(),
             storage_path: "".to_string(),
             news_count: podcasts,

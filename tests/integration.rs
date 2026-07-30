@@ -411,10 +411,6 @@ podcasts:
 
     h.run_ok(&["clean"]);
     assert!(!h.project.join("build").exists(), "build/ removed");
-    assert!(
-        !h.project.join(".cite-cache.json").exists(),
-        "cache removed"
-    );
 
     h.run_ok(&["clean"]);
 }

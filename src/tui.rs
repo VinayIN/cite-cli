@@ -1093,7 +1093,7 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
             Focus::Projects => "[↑/↓] [Ctrl+R] [Enter] [Alt+L/A]",
             Focus::Commands => "[←/→] [Enter]",
             Focus::Details => "[Enter]",
-            Focus::Analytics => "[←/→] [Ctrl+R] [Enter] [Alt+P/T/B/D]",
+            Focus::Analytics => "[↑/↓] [Ctrl+R] [Enter] [Alt+P/T/B/D]",
             Focus::Logs => "[↑/↓] [PgUp/PgDn]",
         },
     };
@@ -1472,26 +1472,29 @@ async fn file_digest(path: &Path) -> Option<[u8; 32]> {
     Some(sha2::Sha256::digest(&bytes).into())
 }
 
-fn resolve_relative(base: &Path, relative: &str) -> PathBuf {
-    let base = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
-    let mut result = base;
-    for comp in Path::new(relative).components() {
-        match comp {
-            std::path::Component::ParentDir => {
-                result.pop();
-            }
-            std::path::Component::Normal(c) => {
-                result.push(c);
-            }
-            _ => {}
+async fn load_context(root: &Path) -> Option<ProjectContext> {
+    match ProjectContext::load(root) {
+        Ok(ctx) => Some(ctx),
+        Err(e) => {
+            error!("{e}");
+            None
         }
     }
-    result
+}
+
+async fn open_db() -> Option<DbManager> {
+    match DbManager::open().await {
+        Ok(db) => Some(db),
+        Err(_) => {
+            error!("Failed to open database");
+            None
+        }
+    }
 }
 
 async fn exec_init(cwd: PathBuf, raw: String) {
     let name = raw.split_whitespace().next().unwrap_or("new-project");
-    let target = resolve_relative(&cwd, name);
+    let target = cwd.join(name);
     match scaffold::init_project(name, &target) {
         Ok(_) => info!("Project '{name}' created at {}", target.display()),
         Err(e) => error!("Init failed: {e}"),
@@ -1499,21 +1502,9 @@ async fn exec_init(cwd: PathBuf, raw: String) {
 }
 
 async fn exec_build(root: Option<PathBuf>, raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
-    let ctx = match ProjectContext::load(&root) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            error!("{e}");
-            return;
-        }
-    };
-    let Ok(db) = DbManager::open().await else {
-        error!("Failed to open database");
-        return;
-    };
+    let Some(root) = root else { error!("No project selected"); return };
+    let Some(ctx) = load_context(&root).await else { return };
+    let Some(db) = open_db().await else { return };
     let force = raw.split_whitespace().any(|w| w == "--force");
     match compiler::compile(&db, &ctx, force).await {
         Ok(outcome) => outcome.emit(),
@@ -1522,57 +1513,25 @@ async fn exec_build(root: Option<PathBuf>, raw: String) {
 }
 
 async fn exec_lint(root: Option<PathBuf>, _raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
-    let ctx = match ProjectContext::load(&root) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            error!("{e}");
-            return;
-        }
-    };
+    let Some(root) = root else { error!("No project selected"); return };
+    let Some(ctx) = load_context(&root).await else { return };
     doctor::lint_all(&ctx).emit();
 }
 
 async fn exec_status(root: Option<PathBuf>, _raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
-    let ctx = match ProjectContext::load(&root) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            error!("{e}");
-            return;
-        }
-    };
-    let Ok(db) = DbManager::open().await else {
-        error!("Failed to open database");
-        return;
-    };
+    let Some(root) = root else { error!("No project selected"); return };
+    let Some(ctx) = load_context(&root).await else { return };
+    let Some(db) = open_db().await else { return };
     project::print_status(&db, &ctx).await;
 }
 
 async fn exec_doctor(root: Option<PathBuf>, _raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
-    let ctx = match ProjectContext::load(&root) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            error!("{e}");
-            return;
-        }
-    };
-    let Ok(db) = DbManager::open().await else {
-        error!("Failed to open database");
-        return;
-    };
+    let Some(root) = root else { error!("No project selected"); return };
+    let Some(ctx) = load_context(&root).await else { return };
+    let Some(db) = open_db().await else { return };
     match doctor::run(&db, &ctx).await {
         Ok(o) => {
+            o.emit();
             if !o.has_errors() && !o.has_warnings() {
                 info!("Doctor check complete; no issues found");
             }
@@ -1582,21 +1541,9 @@ async fn exec_doctor(root: Option<PathBuf>, _raw: String) {
 }
 
 async fn exec_deploy(root: Option<PathBuf>, raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
-    let ctx = match ProjectContext::load(&root) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            error!("{e}");
-            return;
-        }
-    };
-    let Ok(db) = DbManager::open().await else {
-        error!("Failed to open database");
-        return;
-    };
+    let Some(root) = root else { error!("No project selected"); return };
+    let Some(ctx) = load_context(&root).await else { return };
+    let Some(db) = open_db().await else { return };
     let dry_run = raw.split_whitespace().any(|w| w == "--dry-run");
     let staging = raw.split_whitespace().any(|w| w == "--staging");
     if staging {
@@ -1618,17 +1565,8 @@ async fn exec_rollback(root: Option<PathBuf>, raw: String) {
         error!("No deployment ID provided");
         return;
     }
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
-    let ctx = match ProjectContext::load(&root) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            error!("{e}");
-            return;
-        }
-    };
+    let Some(root) = root else { error!("No project selected"); return };
+    let Some(ctx) = load_context(&root).await else { return };
     match deploy::rollback(&ctx, id).await {
         Ok(msg) => info!("{msg}"),
         Err(e) => error!("Rollback failed: {e}"),
@@ -1636,21 +1574,9 @@ async fn exec_rollback(root: Option<PathBuf>, raw: String) {
 }
 
 async fn exec_clean(root: Option<PathBuf>, _raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
-    let ctx = match ProjectContext::load(&root) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            error!("{e}");
-            return;
-        }
-    };
-    let Ok(db) = DbManager::open().await else {
-        error!("Failed to open database");
-        return;
-    };
+    let Some(root) = root else { error!("No project selected"); return };
+    let Some(ctx) = load_context(&root).await else { return };
+    let Some(db) = open_db().await else { return };
     match ctx.clean(&db).await {
         Ok(()) => info!("Cleaned build artifacts"),
         Err(e) => error!("Clean failed: {e}"),

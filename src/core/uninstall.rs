@@ -44,13 +44,14 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
         info!("Removed empty directory {}", install_dir.display());
     }
 
-    // Remove local database and session
+    // Remove local database, session, and credentials
     let home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
     let cite_dir = PathBuf::from(&home).join(".cite");
     if cite_dir.exists() {
         let _ = std::fs::remove_file(cite_dir.join("cite.db"));
         let _ = std::fs::remove_file(cite_dir.join("session.json"));
-        info!("Removed ~/.cite/cite.db and ~/.cite/session.json");
+        let _ = std::fs::remove_file(cite_dir.join("credentials.toml"));
+        info!("Removed ~/.cite/cite.db, session.json, and credentials.toml");
         if std::fs::read_dir(&cite_dir)
             .map(|mut d| d.next().is_none())
             .unwrap_or(true)

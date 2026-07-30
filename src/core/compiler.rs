@@ -121,7 +121,7 @@ pub async fn compile(db: &DbManager, ctx: &ProjectContext, force: bool) -> Resul
         .map(|t| t.entries.len() as i64)
         .sum();
 
-    let was_incremental = !force && bundle.podcasts.len() as i64 > 0;
+    let was_incremental = !force;
 
     let cv = ctx.manifest.build.compiler_version;
     let _ = db.save_cache(&project_id, &current_hashes).await;

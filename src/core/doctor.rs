@@ -200,7 +200,6 @@ pub async fn run(db: &DbManager, ctx: &ProjectContext) -> Result<DoctorOutcome, 
         info!("Artist ID: {}", ctx.manifest.project.artist_id);
     }
 
-    outcome.emit();
     Ok(outcome)
 }
 
@@ -281,6 +280,12 @@ fn validate_metadata(ctx: &ProjectContext, errors: &mut Vec<String>, warnings: &
         return;
     }
 
+    if !ctx.manifest.project.artist_id.is_empty()
+        && uuid::Uuid::parse_str(&ctx.manifest.project.artist_id).is_err()
+    {
+        errors.push("artist_id in cite.toml must be a valid UUID".to_string());
+    }
+
     let mut titles = HashSet::new();
     let mut files = HashSet::new();
 
@@ -339,12 +344,6 @@ fn validate_metadata(ctx: &ProjectContext, errors: &mut Vec<String>, warnings: &
                     pod.title, thumb
                 ));
             }
-        }
-
-        if !ctx.manifest.project.artist_id.is_empty()
-            && uuid::Uuid::parse_str(&ctx.manifest.project.artist_id).is_err()
-        {
-            errors.push("artist_id in cite.toml must be a valid UUID".to_string());
         }
     }
 }

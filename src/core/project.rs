@@ -137,10 +137,6 @@ impl ProjectContext {
         self.root.join("build")
     }
 
-    pub fn id(&self) -> String {
-        self.project_id()
-    }
-
     pub fn content_files(&self) -> Vec<PathBuf> {
         self.metadata
             .referenced_files()
@@ -155,7 +151,7 @@ impl ProjectContext {
             tokio::fs::remove_dir_all(&build_dir).await?;
         }
 
-        let _ = db.clear_cache(&self.id()).await;
+        let _ = db.clear_cache(&self.project_id()).await;
         Ok(())
     }
 }
@@ -171,7 +167,7 @@ pub async fn print_status(db: &crate::core::db::DbManager, ctx: &ProjectContext)
     }
     info!("Podcasts: {}", ctx.metadata.podcasts.len());
 
-    let project_id = ctx.id();
+    let project_id = ctx.project_id();
 
     if let Ok(stats) = db.get_project_stats(&project_id).await {
         info!("Total words: {}", stats.total_words);
@@ -329,7 +325,7 @@ incremental = true
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("cite.toml"), "[project]\nname = \"x\"\n").unwrap();
         let ctx = ProjectContext::load(dir.path()).unwrap();
-        assert_eq!(ctx.id(), dir.path().to_string_lossy());
+        assert_eq!(ctx.project_id(), dir.path().to_string_lossy());
     }
 
     #[test]
