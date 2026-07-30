@@ -1,8 +1,12 @@
 # changelog
 
 ## Unreleased
-  - TUI added to run all the commands interactively
-  - Results from commands are now send in string formats (easy for AI Agents to parse)
+  - Added interactive TUI with realtime project refresh, log panel, and command execution
+  - Using local database to analytics
+  - Added audio metadata extraction (symphonia) and image dimension detection (imagesize)
+  - Added `--json` flag for machine-parseable output across all commands
+  - Added credential management module for Supabase authentication
+  - Fixed thread blocking in TUI by switching to polling with `tokio::spawn`
 
 ## 0.1.0-alpha.1
 - scaffold changed to make it more modular
