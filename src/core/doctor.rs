@@ -625,6 +625,24 @@ pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
             ));
         }
 
+        let paragraphs: Vec<&str> = content_str
+            .split("\n\n")
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect();
+        let short_paras: Vec<&str> = paragraphs
+            .iter()
+            .filter(|p| p.split_whitespace().count() < 20)
+            .copied()
+            .collect();
+        if !short_paras.is_empty() && paragraphs.len() > 1 {
+            warnings.push(format!(
+                "Podcast '{}' has {} short paragraph(s) (< 20 words) — consider expanding",
+                pod.title,
+                short_paras.len()
+            ));
+        }
+
         if word_count > 500 {
             let has_citation = pod.citation.is_some();
             if !has_citation {

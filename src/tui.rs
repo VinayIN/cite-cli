@@ -910,7 +910,7 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut AppState) {
     match app.mode {
         TuiMode::Runner | TuiMode::CommandPalette => {
             let [left, middle, right] = Layout::horizontal([
-                Constraint::Max(30),
+                Constraint::Max(20),
                 Constraint::Fill(2),
                 Constraint::Fill(1),
             ])
@@ -919,11 +919,10 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut AppState) {
             render_categorized_project_list(frame, left, app);
 
             let [tabs_area, details_logs_area] =
-                Layout::vertical([Constraint::Percentage(7), Constraint::Percentage(93)])
-                    .areas(middle);
+                Layout::vertical([Constraint::Max(3), Constraint::Fill(1)]).areas(middle);
 
             let [details_area, logs_area] =
-                Layout::vertical([Constraint::Percentage(30), Constraint::Percentage(70)])
+                Layout::vertical([Constraint::Max(6), Constraint::Fill(1)])
                     .areas(details_logs_area);
 
             render_cmd_tabs(frame, tabs_area, app);
@@ -965,15 +964,35 @@ fn render_categorized_project_list(frame: &mut Frame, area: Rect, app: &mut AppS
         app.projects_state.select(Some(0));
     }
 
-    let list = List::new(items)
-        .block(block(" Projects ", is_focused))
-        .highlight_style(
-            Style::new()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+    let block_widget = block(" Projects ", is_focused);
+    let inner_area = block_widget.inner(area);
+    frame.render_widget(block_widget, area);
+
+    let list = List::new(items).highlight_style(
+        Style::new()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+    frame.render_stateful_widget(list, inner_area, &mut app.projects_state);
+
+    let total = app.project_items.len();
+    let visible = inner_area.height as usize;
+    if total > visible {
+        let selected = app.projects_state.selected().unwrap_or(0);
+        let max_scroll = total.saturating_sub(visible);
+        let scroll_pos = selected.min(max_scroll);
+        let mut scroll_state = ScrollbarState::default()
+            .content_length(total)
+            .position(scroll_pos);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None),
+            area,
+            &mut scroll_state,
         );
-    frame.render_stateful_widget(list, area, &mut app.projects_state);
+    }
 }
 
 fn render_cmd_tabs(frame: &mut Frame, area: Rect, app: &mut AppState) {
@@ -999,11 +1018,7 @@ fn render_cmd_doc(frame: &mut Frame, area: Rect, app: &AppState) {
     ])];
 
     if has_args {
-        lines.extend_from_slice(&[
-            Line::from(""),
-            Line::from(format!("Arguments: {}", cmd.args_hint)),
-            Line::from(""),
-        ]);
+        lines.extend_from_slice(&[Line::from(format!("Arguments: {}", cmd.args_hint))]);
         let input_text = if app.arg_input.is_empty() {
             "Awaiting input...".to_string()
         } else {
@@ -1020,14 +1035,12 @@ fn render_cmd_doc(frame: &mut Frame, area: Rect, app: &AppState) {
             Span::raw("Input: "),
             Span::styled(input_text, cursor_style),
         ]));
-    } else {
-        lines.extend_from_slice(&[Line::from(""), Line::from("No arguments required")]);
     }
 
     frame.render_widget(
         Paragraph::new(Text::from(lines))
             .block(block(" Details ", is_focused))
-            .wrap(Wrap { trim: false }),
+            .wrap(Wrap { trim: true }),
         area,
     );
 }
@@ -1223,12 +1236,50 @@ fn render_editor_pick(frame: &mut Frame, area: Rect, app: &mut AppState) {
 
 fn render_analytics_content(frame: &mut Frame, area: Rect, app: &AppState) {
     let mut lines: Vec<Line> = Vec::new();
+    render_analytics_global(&mut lines, &app.analytics);
+    render_analytics_project_stats(&mut lines, &app.analytics);
+    render_analytics_podcasts(&mut lines, &app.analytics);
+    render_analytics_timelines(&mut lines, &app.analytics);
+    render_analytics_builds(&mut lines, &app.analytics);
+    render_analytics_deployments(&mut lines, &app.analytics);
 
+    let is_focused = matches!(app.focus, Focus::Analytics);
+    let block_widget = block(" Analytics ", is_focused);
+    let inner_area = block_widget.inner(area);
+    frame.render_widget(block_widget, area);
+
+    let visible_lines = inner_area.height as usize;
+    let total_lines = lines.len();
+    let max_scroll = total_lines.saturating_sub(visible_lines);
+    let scroll_y = app.analytics.scroll.min(max_scroll);
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .wrap(Wrap { trim: false })
+            .scroll((scroll_y as u16, 0)),
+        inner_area,
+    );
+
+    if total_lines > visible_lines {
+        let mut scroll_state = ScrollbarState::default()
+            .content_length(total_lines)
+            .position(scroll_y);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None),
+            area,
+            &mut scroll_state,
+        );
+    }
+}
+
+fn render_analytics_global(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
     lines.push(Line::from(Span::styled(
         "Global Summary",
         Style::new().bold(),
     )));
-    if let Some(ref global) = app.analytics.global {
+    if let Some(ref global) = analytics.global {
         lines.push(Line::from(format!(
             "  Projects   : {}",
             global.project_count
@@ -1250,18 +1301,21 @@ fn render_analytics_content(frame: &mut Frame, area: Rect, app: &AppState) {
         lines.push(Line::from("  No data"));
     }
     lines.push(Line::from(""));
+}
 
+fn render_analytics_project_stats(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
+    let label = if analytics.stats_expanded {
+        "▼"
+    } else {
+        "▶"
+    };
     lines.push(Line::from(Span::styled(
         "Project Statistics",
         Style::new().bold(),
     )));
-    lines.push(Line::from(if app.analytics.stats_expanded {
-        "▼"
-    } else {
-        "▶"
-    }));
-    if app.analytics.stats_expanded {
-        if let Some(ref stats) = app.analytics.stats {
+    lines.push(Line::from(label));
+    if analytics.stats_expanded {
+        if let Some(ref stats) = analytics.stats {
             lines.push(Line::from(format!(
                 "  Podcasts     : {}",
                 stats.podcast_count
@@ -1282,146 +1336,129 @@ fn render_analytics_content(frame: &mut Frame, area: Rect, app: &AppState) {
                 "  Deployments  : {}",
                 stats.deployment_count
             )));
-
             if let Some(ref last) = stats.last_built {
-                let d = last.get(..19).unwrap_or(last);
-                lines.push(Line::from(format!("  Last Build   : {}", d)));
+                lines.push(Line::from(format!(
+                    "  Last Build   : {}",
+                    last.get(..19).unwrap_or(last)
+                )));
             }
             if let Some(ref last) = stats.last_deployed {
-                let d = last.get(..19).unwrap_or(last);
-                lines.push(Line::from(format!("  Last Deploy  : {}", d)));
+                lines.push(Line::from(format!(
+                    "  Last Deploy  : {}",
+                    last.get(..19).unwrap_or(last)
+                )));
             }
-        } else {
-            lines.push(Line::from(""));
         }
     }
     lines.push(Line::from(""));
+}
 
+fn render_analytics_podcasts(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
+    let label = if analytics.podcasts_expanded {
+        "▼"
+    } else {
+        "▶"
+    };
     lines.push(Line::from(Span::styled(
         "Podcasts Metadata",
         Style::new().bold(),
     )));
-    lines.push(Line::from(if app.analytics.podcasts_expanded {
-        "▼"
-    } else {
-        "▶"
-    }));
-    if app.analytics.podcasts_expanded {
-        if !app.analytics.podcasts.is_empty() {
-            for p in &app.analytics.podcasts {
-                let tag = if p.category.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", p.category)
-                };
-                let audio_flag = if p.has_audio { " [A]" } else { "" };
-                let thumb_flag = if p.has_thumbnail { " [T]" } else { "" };
-                let file_name = p.file.rsplit('/').next().unwrap_or(&p.file);
-                lines.push(Line::from(format!(
-                    "  {}{}{}{}  ({}w) <{}>",
-                    p.title, tag, audio_flag, thumb_flag, p.word_count, file_name
-                )));
-            }
-        } else {
-            lines.push(Line::from(""));
+    lines.push(Line::from(label));
+    if analytics.podcasts_expanded {
+        for p in &analytics.podcasts {
+            let tag = if p.category.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", p.category)
+            };
+            let audio_flag = if p.has_audio { " [A]" } else { "" };
+            let thumb_flag = if p.has_thumbnail { " [T]" } else { "" };
+            let file_name = p.file.rsplit('/').next().unwrap_or(&p.file);
+            lines.push(Line::from(format!(
+                "  {}{}{}{}  ({}w) <{}>",
+                p.title, tag, audio_flag, thumb_flag, p.word_count, file_name
+            )));
         }
     }
     lines.push(Line::from(""));
+}
 
+fn render_analytics_timelines(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
+    let label = if analytics.timelines_expanded {
+        "▼"
+    } else {
+        "▶"
+    };
     lines.push(Line::from(Span::styled("Timelines", Style::new().bold())));
-    lines.push(Line::from(if app.analytics.timelines_expanded {
-        "▼"
-    } else {
-        "▶"
-    }));
-    if app.analytics.timelines_expanded {
-        if !app.analytics.timelines.is_empty() {
-            for t in &app.analytics.timelines {
-                let mut extra = String::new();
-                if let Some(et) = &t.entry_type {
-                    extra = format!(" ({})", et);
-                }
-                if t.url.is_some() {
-                    extra.push_str(" link");
-                }
-                lines.push(Line::from(format!(
-                    "  {}  {}{}",
-                    t.date.as_deref().unwrap_or("??"),
-                    t.title,
-                    extra,
-                )));
+    lines.push(Line::from(label));
+    if analytics.timelines_expanded {
+        for t in &analytics.timelines {
+            let mut extra = String::new();
+            if let Some(et) = &t.entry_type {
+                extra = format!(" ({})", et);
             }
-        } else {
-            lines.push(Line::from(""));
+            if t.url.is_some() {
+                extra.push_str(" link");
+            }
+            lines.push(Line::from(format!(
+                "  {}  {}{}",
+                t.date.as_deref().unwrap_or("??"),
+                t.title,
+                extra
+            )));
         }
     }
     lines.push(Line::from(""));
+}
 
+fn render_analytics_builds(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
+    let label = if analytics.builds_expanded {
+        "▼"
+    } else {
+        "▶"
+    };
     lines.push(Line::from(Span::styled(
         "Build History",
         Style::new().bold(),
     )));
-    lines.push(Line::from(if app.analytics.builds_expanded {
-        "▼"
-    } else {
-        "▶"
-    }));
-    if app.analytics.builds_expanded {
-        if !app.analytics.builds.is_empty() {
-            for b in &app.analytics.builds {
-                let date = b.built_at.get(..16).unwrap_or(&b.built_at);
-                lines.push(Line::from(format!(
-                    "  {} p:{} w:{} {:>4}ms {}",
-                    date,
-                    b.podcast_count,
-                    b.total_words,
-                    b.duration_ms,
-                    if b.was_incremental {
-                        "(incr)"
-                    } else {
-                        "(full)"
-                    },
-                )));
-            }
-        } else {
-            lines.push(Line::from(""));
+    lines.push(Line::from(label));
+    if analytics.builds_expanded {
+        for b in &analytics.builds {
+            let date = b.built_at.get(..16).unwrap_or(&b.built_at);
+            let flag = if b.was_incremental {
+                "(incr)"
+            } else {
+                "(full)"
+            };
+            lines.push(Line::from(format!(
+                "  {} p:{} w:{} {:>4}ms {}",
+                date, b.podcast_count, b.total_words, b.duration_ms, flag
+            )));
         }
     }
     lines.push(Line::from(""));
+}
 
+fn render_analytics_deployments(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
+    let label = if analytics.deploys_expanded {
+        "▼"
+    } else {
+        "▶"
+    };
     lines.push(Line::from(Span::styled(
         "Deployment History",
         Style::new().bold(),
     )));
-    lines.push(Line::from(if app.analytics.deploys_expanded {
-        "▼"
-    } else {
-        "▶"
-    }));
-    if app.analytics.deploys_expanded {
-        if !app.analytics.deploys.is_empty() {
-            for d in &app.analytics.deploys {
-                let status = if d.success { "ok" } else { "fail" };
-                lines.push(Line::from(format!(
-                    "  {}  {}  {}  n:{} a:{}",
-                    d.deployment_id, d.deployed_at, status, d.news_count, d.asset_count
-                )));
-            }
-        } else {
-            lines.push(Line::from(""));
+    lines.push(Line::from(label));
+    if analytics.deploys_expanded {
+        for d in &analytics.deploys {
+            let status = if d.success { "ok" } else { "fail" };
+            lines.push(Line::from(format!(
+                "  {}  {}  {}  n:{} a:{}",
+                d.deployment_id, d.deployed_at, status, d.news_count, d.asset_count
+            )));
         }
     }
-
-    let visible_lines = area.height.saturating_sub(2) as usize;
-    let max_scroll = lines.len().saturating_sub(visible_lines);
-    let scroll_y = app.analytics.scroll.min(max_scroll);
-
-    let paragraph = Paragraph::new(Text::from(lines))
-        .block(block(" Analytics ", matches!(app.focus, Focus::Analytics)))
-        .wrap(Wrap { trim: false })
-        .scroll((scroll_y as u16, 0));
-
-    frame.render_widget(paragraph, area);
 }
 
 async fn edit_file(

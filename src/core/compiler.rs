@@ -390,7 +390,7 @@ fn format_bib_date(year: &Option<String>, month: &Option<String>) -> String {
             "aug" | "august" => "08",
             "sep" | "september" => "09",
             "oct" | "october" => "10",
-            "nov" | "novermber" => "11",
+            "nov" | "november" => "11",
             "dec" | "december" => "12",
             _ => return None,
         })

@@ -21,17 +21,20 @@ impl FormatTime for FormattedTimestamp {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse();
-
-    let filter = if cli.verbose {
+fn build_filter(verbose: bool, quiet: bool) -> EnvFilter {
+    if verbose {
         EnvFilter::new("cite_cli=trace")
-    } else if cli.quiet {
+    } else if quiet {
         EnvFilter::new("cite_cli=error")
     } else {
         EnvFilter::new("cite_cli=info")
-    };
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let filter = build_filter(cli.verbose, cli.quiet);
 
     if cli.command.is_none() {
         let (log_tx, log_rx) = mpsc::unbounded_channel();
