@@ -46,7 +46,6 @@ pub enum CommandId {
     Doctor,
     Deploy,
     Rollback,
-    Clean,
 }
 
 pub const CMDS: &[Cmd] = &[
@@ -85,13 +84,6 @@ pub const CMDS: &[Cmd] = &[
         needs_project: true,
         id: CommandId::Rollback,
     },
-    Cmd {
-        label: "clean",
-        desc: "Remove build artifacts and cache",
-        args_hint: "",
-        needs_project: true,
-        id: CommandId::Clean,
-    },
 ];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -104,7 +96,6 @@ pub enum TuiMode {
 pub enum Focus {
     Projects,
     Commands,
-    Details,
     Analytics,
     Logs,
 }
@@ -130,7 +121,6 @@ pub struct AnalyticsState {
     pub timelines: Vec<StoredTimeline>,
     pub builds: Vec<StoredBuild>,
     pub deploys: Vec<StoredDeployment>,
-    pub stats_expanded: bool,
     pub podcasts_expanded: bool,
     pub timelines_expanded: bool,
     pub builds_expanded: bool,
@@ -177,6 +167,7 @@ pub struct AppState {
 
     local_expanded: bool,
     archived_expanded: bool,
+    pending_init: bool,
 }
 
 impl AppState {
@@ -213,7 +204,6 @@ impl AppState {
                 timelines: Vec::new(),
                 builds: Vec::new(),
                 deploys: Vec::new(),
-                stats_expanded: true,
                 podcasts_expanded: false,
                 timelines_expanded: false,
                 builds_expanded: false,
@@ -225,6 +215,7 @@ impl AppState {
             },
             local_expanded: true,
             archived_expanded: true,
+            pending_init: false,
         };
 
         state.refresh_projects().await;
@@ -332,15 +323,12 @@ impl AppState {
     }
 
     fn focus_order(&self) -> Vec<Focus> {
-        let sel = self.cmds_state.selected().unwrap_or(0);
-        let has_args = !CMDS[sel].args_hint.is_empty();
-        let mut order = vec![Focus::Projects, Focus::Commands];
-        if has_args {
-            order.push(Focus::Details);
-        }
-        order.push(Focus::Analytics);
-        order.push(Focus::Logs);
-        order
+        vec![
+            Focus::Projects,
+            Focus::Commands,
+            Focus::Analytics,
+            Focus::Logs,
+        ]
     }
 
     fn palette_commands(&self) -> Vec<usize> {
@@ -409,14 +397,16 @@ impl AppState {
         match key.code {
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if !self.busy {
-                    self.analytics.stats = None;
-                    self.analytics.global = None;
-                    self.analytics.scroll = 0;
                     self.refresh_projects().await;
                     self.load_analytics_data().await;
                     self.log.clear();
                     self.scroll = 0;
                     info!(">> Refreshed");
+                }
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::ALT) => {
+                if self.focus == Focus::Projects && !self.busy {
+                    self.open_edit_picker();
                 }
             }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -524,27 +514,26 @@ impl AppState {
                                     self.rebuild_project_items();
                                 }
                                 ProjectItemKind::LocalProject(_) => {
-                                    info!(">> Selected project");
+                                    info!(">> Selected project ");
                                     self.load_analytics_data().await;
-                                    self.open_edit_picker();
                                 }
                                 ProjectItemKind::ArchivedProject(name) => {
                                     self.restore_prompt = Some(name.clone());
                                 }
                             }
                         }
-                        Focus::Commands | Focus::Details => self.start_cmd(),
+                        Focus::Commands => self.start_cmd(),
                         _ => {}
                     }
                 }
             }
-            KeyCode::Backspace => {
-                if matches!(self.focus, Focus::Details) && !self.busy {
+            KeyCode::Backspace if !self.busy => {
+                if matches!(self.focus, Focus::Commands) {
                     self.arg_input.pop();
                 }
             }
-            KeyCode::Char(ch) => {
-                if matches!(self.focus, Focus::Details) && !self.busy {
+            KeyCode::Char(ch) if !self.busy => {
+                if matches!(self.focus, Focus::Commands) {
                     self.arg_input.push(ch);
                 }
             }
@@ -590,6 +579,7 @@ impl AppState {
         );
 
         self.busy = true;
+        self.pending_init = cmd.id == CommandId::Init;
         let id = cmd.id;
         let tx = self.tx.clone();
         let cwd = self.cwd.clone();
@@ -601,7 +591,6 @@ impl AppState {
                 CommandId::Doctor => exec_doctor(root, raw_args).await,
                 CommandId::Deploy => exec_deploy(root, raw_args).await,
                 CommandId::Rollback => exec_rollback(root, raw_args).await,
-                CommandId::Clean => exec_clean(root, raw_args).await,
             }
             let _ = tx.send(()).await;
         });
@@ -628,7 +617,7 @@ impl AppState {
                 }
             }
             KeyCode::Char(c) => {
-                self.focus = Focus::Details;
+                self.focus = Focus::Commands;
                 self.arg_input.push(c);
                 self.mode = TuiMode::Runner;
             }
@@ -724,15 +713,15 @@ fn collect_files(base: &Path, dir: &Path, files: &mut Vec<PathBuf>) {
 
 fn block(title: impl Into<String>, focused: bool) -> Block<'static> {
     let border_style = if focused {
-        Style::new()
+        Style::new().fg(Color::Cyan)
     } else {
-        Style::new().dim()
+        Style::new()
     };
     Block::default()
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
-        .title(title.into())
         .border_style(border_style)
+        .title(title.into())
 }
 
 fn color_log_line(l: &str) -> Line<'static> {
@@ -794,6 +783,13 @@ pub async fn run_tui(
                 info!(">> Command complete, refreshing");
                 app.refresh_projects().await;
                 app.load_analytics_data().await;
+                if app.pending_init {
+                    app.pending_init = false;
+                    if !app.project_items.is_empty() {
+                        app.projects_state.select(Some(0));
+                        app.focus = Focus::Projects;
+                    }
+                }
             }
             Some(line) = log_rx.recv() => {
                 let was_at_bottom = app.scroll >= app.log.len().saturating_sub(1);
@@ -814,7 +810,7 @@ pub async fn run_tui(
                         app.handle_key(key).await;
 
                         if let Some(path) = app.pending_edit.take() {
-                            edit_file(&mut terminal, &mut app, &path)
+                            edit_file(&mut terminal, &path)
                                 .await
                                 .map_err(|e| CiteError::Config(format!("{e}")))?;
                         }
@@ -900,15 +896,10 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut AppState) {
 
             render_categorized_project_list(frame, left, app);
 
-            let [tabs_area, details_logs_area] =
-                Layout::vertical([Constraint::Max(3), Constraint::Fill(1)]).areas(middle);
+            let [cmd_area, logs_area] =
+                Layout::vertical([Constraint::Max(8), Constraint::Min(3)]).areas(middle);
 
-            let [details_area, logs_area] =
-                Layout::vertical([Constraint::Max(6), Constraint::Fill(1)])
-                    .areas(details_logs_area);
-
-            render_cmd_tabs(frame, tabs_area, app);
-            render_cmd_doc(frame, details_area, app);
+            render_commands_pane(frame, cmd_area, app);
             render_log(frame, logs_area, app);
 
             render_analytics_content(frame, right, app);
@@ -977,34 +968,46 @@ fn render_categorized_project_list(frame: &mut Frame, area: Rect, app: &mut AppS
     }
 }
 
-fn render_cmd_tabs(frame: &mut Frame, area: Rect, app: &mut AppState) {
+fn render_commands_pane(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let is_focused = matches!(app.focus, Focus::Commands);
+    let block_widget = block(" Commands ", is_focused);
+    let inner = block_widget.inner(area);
+    frame.render_widget(block_widget, area);
+
+    let [tabs_area, doc_area] =
+        Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
+
+    let tab_block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(if is_focused {
+            Style::new().fg(Color::Cyan)
+        } else {
+            Style::default()
+        });
+    let tab_inner = tab_block.inner(tabs_area);
+    frame.render_widget(tab_block, tabs_area);
+
     let titles: Vec<Line> = CMDS.iter().map(|cmd| Line::from(cmd.label)).collect();
     let tabs = Tabs::new(titles)
-        .block(block(" Commands ", is_focused))
         .select(app.cmds_state.selected().unwrap_or(0))
         .divider(symbols::DOT)
         .highlight_style(Style::new().bold().fg(Color::Cyan));
-    frame.render_widget(tabs, area);
-}
+    frame.render_widget(tabs, tab_inner);
 
-fn render_cmd_doc(frame: &mut Frame, area: Rect, app: &AppState) {
     let sel = app.cmds_state.selected().unwrap_or(0);
     let cmd = &CMDS[sel];
-    let is_focused = matches!(app.focus, Focus::Details);
-    let has_args = !cmd.args_hint.is_empty();
 
-    let mut lines = vec![Line::from(vec![
-        Span::styled(format!("{}: ", cmd.label), Style::new().bold()),
-        Span::raw(cmd.desc),
-    ])];
+    let mut lines = vec![Line::from(vec![Span::raw(format!(
+        "{}: {}",
+        cmd.label, cmd.desc
+    ))])];
 
-    if has_args {
-        lines.extend_from_slice(&[Line::from(format!("Arguments: {}", cmd.args_hint))]);
+    if !cmd.args_hint.is_empty() {
+        lines.push(Line::from(format!("Arguments: {}", cmd.args_hint)));
         let input_text = if app.arg_input.is_empty() {
             "Awaiting input...".to_string()
         } else {
-            format!("{}", app.arg_input)
+            app.arg_input.clone()
         };
         let cursor_style = if is_focused {
             Style::new()
@@ -1020,10 +1023,8 @@ fn render_cmd_doc(frame: &mut Frame, area: Rect, app: &AppState) {
     }
 
     frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .block(block(" Details ", is_focused))
-            .wrap(Wrap { trim: true }),
-        area,
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true }),
+        doc_area,
     );
 }
 
@@ -1068,7 +1069,6 @@ fn pane_label(focus: Focus) -> &'static str {
     match focus {
         Focus::Projects => " Projects ",
         Focus::Commands => " Commands ",
-        Focus::Details => " Details ",
         Focus::Analytics => " Analytics ",
         Focus::Logs => " Logs ",
     }
@@ -1083,9 +1083,17 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
     let help_text = match app.mode {
         TuiMode::CommandPalette => "[↑/↓] [Enter] [Esc]",
         TuiMode::Runner => match app.focus {
-            Focus::Projects => "[↑/↓] [Ctrl+R] [Enter] [Alt+L/A]",
-            Focus::Commands => "[←/→] [Enter]",
-            Focus::Details => "[Enter]",
+            Focus::Projects => "[↑/↓] [Ctrl+R] [Enter] [Alt+E/L/A]",
+            Focus::Commands => {
+                let has_args = !CMDS[app.cmds_state.selected().unwrap_or(0)]
+                    .args_hint
+                    .is_empty();
+                if has_args {
+                    "[←/→] [Enter] [type args]"
+                } else {
+                    "[←/→] [Enter]"
+                }
+            }
             Focus::Analytics => "[↑/↓] [Ctrl+R] [Enter] [Alt+P/T/B/D]",
             Focus::Logs => "[↑/↓] [PgUp/PgDn]",
         },
@@ -1094,7 +1102,7 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
     let [left_area, right_area] =
         Layout::horizontal([Constraint::Length(18), Constraint::Fill(1)]).areas(area);
 
-    let left_style = Style::new().bold().fg(Color::Cyan);
+    let left_style = Style::new().bold().bg(Color::Cyan).fg(Color::Black);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(mode_label, left_style))),
         left_area,
@@ -1175,8 +1183,12 @@ fn render_restore_prompt(frame: &mut Frame, area: Rect, app: &AppState) {
         Line::from(""),
         Line::from(Span::styled("[Y]es  [N]o", Style::new().bold())),
     ]);
+    let restore_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Restore ")
+        .border_style(Style::new().fg(Color::Yellow));
     let p = Paragraph::new(text)
-        .block(block(" Restore ", true))
+        .block(restore_block)
         .alignment(Alignment::Center);
     frame.render_widget(Clear, popup);
     frame.render_widget(p, popup);
@@ -1207,8 +1219,13 @@ fn render_editor_pick(frame: &mut Frame, area: Rect, app: &mut AppState) {
         .iter()
         .map(|f| ListItem::new(f.strip_prefix(&root).unwrap_or(f).to_string_lossy()))
         .collect();
+    let edit_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Select File to Edit ")
+        .border_style(Style::new().fg(Color::Yellow));
+
     let list = List::new(items)
-        .block(block(" Select File to Edit ", true))
+        .block(edit_block)
         .highlight_style(Style::new().bold())
         .highlight_symbol("▸ ");
 
@@ -1219,10 +1236,15 @@ fn render_editor_pick(frame: &mut Frame, area: Rect, app: &mut AppState) {
 fn render_analytics_content(frame: &mut Frame, area: Rect, app: &AppState) {
     let mut lines: Vec<Line> = Vec::new();
     render_analytics_global(&mut lines, &app.analytics);
+    lines.push(Line::from(""));
     render_analytics_project_stats(&mut lines, &app.analytics);
+    lines.push(Line::from(""));
     render_analytics_podcasts(&mut lines, &app.analytics);
+    lines.push(Line::from(""));
     render_analytics_timelines(&mut lines, &app.analytics);
+    lines.push(Line::from(""));
     render_analytics_builds(&mut lines, &app.analytics);
+    lines.push(Line::from(""));
     render_analytics_deployments(&mut lines, &app.analytics);
 
     let is_focused = matches!(app.focus, Focus::Analytics);
@@ -1282,57 +1304,49 @@ fn render_analytics_global(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
     } else {
         lines.push(Line::from("  No data"));
     }
-    lines.push(Line::from(""));
 }
 
 fn render_analytics_project_stats(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
-    let label = if analytics.stats_expanded {
-        "▼"
-    } else {
-        "▶"
-    };
     lines.push(Line::from(Span::styled(
         "Project Statistics",
         Style::new().bold(),
     )));
-    lines.push(Line::from(label));
-    if analytics.stats_expanded {
-        if let Some(ref stats) = analytics.stats {
+    if let Some(ref stats) = analytics.stats {
+        lines.push(Line::from(format!(
+            "  Podcasts     : {}",
+            stats.podcast_count
+        )));
+        lines.push(Line::from(format!(
+            "  Total Words  : {}",
+            stats.total_words
+        )));
+        lines.push(Line::from(format!(
+            "  Timelines    : {}",
+            stats.timeline_count
+        )));
+        lines.push(Line::from(format!(
+            "  Builds       : {}",
+            stats.build_count
+        )));
+        lines.push(Line::from(format!(
+            "  Deployments  : {}",
+            stats.deployment_count
+        )));
+        if let Some(ref last) = stats.last_built {
             lines.push(Line::from(format!(
-                "  Podcasts     : {}",
-                stats.podcast_count
+                "  Last Build   : {}",
+                last.get(..19).unwrap_or(last)
             )));
-            lines.push(Line::from(format!(
-                "  Total Words  : {}",
-                stats.total_words
-            )));
-            lines.push(Line::from(format!(
-                "  Timelines    : {}",
-                stats.timeline_count
-            )));
-            lines.push(Line::from(format!(
-                "  Builds       : {}",
-                stats.build_count
-            )));
-            lines.push(Line::from(format!(
-                "  Deployments  : {}",
-                stats.deployment_count
-            )));
-            if let Some(ref last) = stats.last_built {
-                lines.push(Line::from(format!(
-                    "  Last Build   : {}",
-                    last.get(..19).unwrap_or(last)
-                )));
-            }
-            if let Some(ref last) = stats.last_deployed {
-                lines.push(Line::from(format!(
-                    "  Last Deploy  : {}",
-                    last.get(..19).unwrap_or(last)
-                )));
-            }
         }
+        if let Some(ref last) = stats.last_deployed {
+            lines.push(Line::from(format!(
+                "  Last Deploy  : {}",
+                last.get(..19).unwrap_or(last)
+            )));
+        }
+    } else {
+        lines.push(Line::from("  No Project Selected"));
     }
-    lines.push(Line::from(""));
 }
 
 fn render_analytics_podcasts(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
@@ -1362,7 +1376,6 @@ fn render_analytics_podcasts(lines: &mut Vec<Line>, analytics: &AnalyticsState) 
             )));
         }
     }
-    lines.push(Line::from(""));
 }
 
 fn render_analytics_timelines(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
@@ -1390,7 +1403,6 @@ fn render_analytics_timelines(lines: &mut Vec<Line>, analytics: &AnalyticsState)
             )));
         }
     }
-    lines.push(Line::from(""));
 }
 
 fn render_analytics_builds(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
@@ -1418,7 +1430,6 @@ fn render_analytics_builds(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
             )));
         }
     }
-    lines.push(Line::from(""));
 }
 
 fn render_analytics_deployments(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
@@ -1443,11 +1454,7 @@ fn render_analytics_deployments(lines: &mut Vec<Line>, analytics: &AnalyticsStat
     }
 }
 
-async fn edit_file(
-    terminal: &mut ratatui::DefaultTerminal,
-    app: &mut AppState,
-    path: &Path,
-) -> std::io::Result<()> {
+async fn edit_file(terminal: &mut ratatui::DefaultTerminal, path: &Path) -> std::io::Result<()> {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".to_string());
@@ -1479,7 +1486,6 @@ async fn edit_file(
         }
         s => warn!("Editor exited with {s}"),
     }
-    app.refresh_projects().await;
     Ok(())
 }
 
@@ -1487,6 +1493,25 @@ async fn file_digest(path: &Path) -> Option<[u8; 32]> {
     use sha2::Digest;
     let bytes = tokio::fs::read(path).await.ok()?;
     Some(sha2::Sha256::digest(&bytes).into())
+}
+
+async fn load_project_context(root: Option<PathBuf>) -> Option<(ProjectContext, DbManager)> {
+    let root = root?;
+    let ctx = match ProjectContext::load(&root) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to load project: {e}");
+            return None;
+        }
+    };
+    let db = match DbManager::open().await {
+        Ok(d) => d,
+        Err(e) => {
+            error!("Failed to open database: {e}");
+            return None;
+        }
+    };
+    Some((ctx, db))
 }
 
 async fn exec_init(cwd: PathBuf, raw: String) {
@@ -1499,16 +1524,7 @@ async fn exec_init(cwd: PathBuf, raw: String) {
 }
 
 async fn exec_build(root: Option<PathBuf>, raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
-    let Ok(ctx) = ProjectContext::load(&root) else {
-        error!("Failed to load project");
-        return;
-    };
-    let Ok(db) = DbManager::open().await else {
-        error!("Failed to open database");
+    let Some((ctx, db)) = load_project_context(root).await else {
         return;
     };
     let force = raw.split_whitespace().any(|w| w == "--force");
@@ -1519,16 +1535,7 @@ async fn exec_build(root: Option<PathBuf>, raw: String) {
 }
 
 async fn exec_doctor(root: Option<PathBuf>, _raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
-    let Ok(ctx) = ProjectContext::load(&root) else {
-        error!("Failed to load project");
-        return;
-    };
-    let Ok(db) = DbManager::open().await else {
-        error!("Failed to open database");
+    let Some((ctx, db)) = load_project_context(root).await else {
         return;
     };
     match doctor::run(&db, &ctx).await {
@@ -1544,16 +1551,7 @@ async fn exec_doctor(root: Option<PathBuf>, _raw: String) {
 }
 
 async fn exec_deploy(root: Option<PathBuf>, raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
-    let Ok(ctx) = ProjectContext::load(&root) else {
-        error!("Failed to load project");
-        return;
-    };
-    let Ok(db) = DbManager::open().await else {
-        error!("Failed to open database");
+    let Some((ctx, db)) = load_project_context(root).await else {
         return;
     };
     let dry_run = raw.split_whitespace().any(|w| w == "--dry-run");
@@ -1588,24 +1586,5 @@ async fn exec_rollback(root: Option<PathBuf>, raw: String) {
     match deploy::rollback(&ctx, id).await {
         Ok(msg) => info!("{msg}"),
         Err(e) => error!("Rollback failed: {e}"),
-    }
-}
-
-async fn exec_clean(root: Option<PathBuf>, _raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
-    let Ok(ctx) = ProjectContext::load(&root) else {
-        error!("Failed to load project");
-        return;
-    };
-    let Ok(db) = DbManager::open().await else {
-        error!("Failed to open database");
-        return;
-    };
-    match ctx.clean(&db).await {
-        Ok(()) => info!("Cleaned build artifacts"),
-        Err(e) => error!("Clean failed: {e}"),
     }
 }
