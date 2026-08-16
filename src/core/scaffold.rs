@@ -61,6 +61,23 @@ fn manifest_template(name: &str) -> Result<String, CiteError> {
     Ok(format!("{AUTO_GEN_HEADER}\n{body}"))
 }
 
+fn metadata_template() -> Result<String, CiteError> {
+    let meta = Metadata::default();
+    let body = serde_yaml::to_string(&meta)?;
+    Ok(format!(
+        "{AUTO_GEN_HEADER}# Add your podcast entries below. Each entry becomes one episode.\n\
+#   title:     Display title of the episode\n\
+#   file:      Path to the Markdown source\n\
+#   source_url: Original URL (optional)\n\
+#   category:  Category name (optional)\n\
+#   thumbnail: Path under assets/image (optional)\n\
+#   audio:     Path under assets/audio (optional)\n\
+#   citation:  Path to BibTeX file (optional)\n\
+{}\n",
+        body.trim_end(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,21 +124,4 @@ mod tests {
         assert_eq!(manifest.build.compiler_version, 1.0);
         assert!(manifest.build.incremental);
     }
-}
-
-fn metadata_template() -> Result<String, CiteError> {
-    let meta = Metadata::default();
-    let body = serde_yaml::to_string(&meta)?;
-    Ok(format!(
-        "{AUTO_GEN_HEADER}# Add your podcast entries below. Each entry becomes one episode.\n\
-#   title:     Display title of the episode\n\
-#   file:      Path to the Markdown source\n\
-#   source_url: Original URL (optional)\n\
-#   category:  Category name (optional)\n\
-#   thumbnail: Path under assets/image (optional)\n\
-#   audio:     Path under assets/audio (optional)\n\
-#   citation:  Path to BibTeX file (optional)\n\
-{}\n",
-        body.trim_end(),
-    ))
 }

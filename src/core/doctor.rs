@@ -354,22 +354,34 @@ fn validate_markdown(ctx: &ProjectContext, errors: &mut Vec<String>, warnings: &
                 if let Some(first) = lines.first()
                     && first.starts_with("---")
                 {
-                    if let Some(end) = lines
+                    match lines
                         .iter()
-                        .position(|l| l.starts_with("---") && l != &"---")
+                        .skip(1)
+                        .position(|l| l.trim() == "---")
+                        .map(|i| i + 1)
                     {
-                        let frontmatter: Vec<&&str> = lines[1..end].iter().collect();
-                        if frontmatter.is_empty() {
+                        Some(end) => {
+                            let frontmatter: Vec<&&str> = lines[1..end].iter().collect();
+                            if frontmatter.is_empty() {
+                                warnings.push(format!(
+                                    "Podcast '{}' has empty YAML frontmatter",
+                                    pod.title
+                                ));
+                            }
+                            let yaml = lines[1..end].join("\n");
+                            if let Err(e) = serde_yaml::from_str::<serde_yaml::Value>(&yaml) {
+                                errors.push(format!(
+                                    "Podcast '{}' has invalid YAML frontmatter: {e}",
+                                    pod.title
+                                ));
+                            }
+                        }
+                        None => {
                             warnings.push(format!(
-                                "Podcast '{}' has empty YAML frontmatter",
+                                "Podcast '{}' has unclosed YAML frontmatter",
                                 pod.title
                             ));
                         }
-                    } else {
-                        warnings.push(format!(
-                            "Podcast '{}' has unclosed YAML frontmatter",
-                            pod.title
-                        ));
                     }
                 }
             }

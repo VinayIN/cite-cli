@@ -35,6 +35,7 @@ pub struct BundlePodcast {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleTimeline {
     pub id: String,
+    pub podcast_id: String,
     pub entries: Vec<TimelineEntry>,
 }
 
@@ -197,7 +198,7 @@ async fn build_bundle(
         };
 
         podcasts.push(BundlePodcast {
-            id,
+            id: id.clone(),
             podcast: p.clone(),
             content,
             audio_meta,
@@ -215,7 +216,15 @@ async fn build_bundle(
                         ctx.project_id(),
                         citation
                     ));
-                    timelines.push(BundleTimeline { id: tl_id, entries });
+                    let mut entries = entries;
+                    for (idx, entry) in entries.iter_mut().enumerate() {
+                        entry.id = format!("{tl_id}-{idx}");
+                    }
+                    timelines.push(BundleTimeline {
+                        id: tl_id,
+                        podcast_id: id.clone(),
+                        entries,
+                    });
                 }
             }
         }

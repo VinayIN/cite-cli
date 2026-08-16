@@ -369,7 +369,8 @@ impl AppState {
     pub async fn handle_key(&mut self, key: KeyEvent) {
         if (key.code == KeyCode::Char('p') || key.code == KeyCode::Char('P'))
             && (key.modifiers.contains(KeyModifiers::SUPER)
-                || key.modifiers.contains(KeyModifiers::CONTROL))
+                || (key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.modifiers.contains(KeyModifiers::SHIFT)))
         {
             self.mode = match self.mode {
                 TuiMode::CommandPalette => TuiMode::Runner,
@@ -404,38 +405,38 @@ impl AppState {
                     info!(">> Refreshed");
                 }
             }
-            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.focus == Focus::Projects && !self.busy {
                     self.open_edit_picker();
                 }
             }
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.focus == Focus::Analytics && !self.busy {
                     self.analytics.podcasts_expanded = !self.analytics.podcasts_expanded;
                 }
             }
-            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.focus == Focus::Analytics && !self.busy {
                     self.analytics.timelines_expanded = !self.analytics.timelines_expanded;
                 }
             }
-            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.focus == Focus::Analytics && !self.busy {
                     self.analytics.builds_expanded = !self.analytics.builds_expanded;
                 }
             }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.focus == Focus::Analytics && !self.busy {
                     self.analytics.deploys_expanded = !self.analytics.deploys_expanded;
                 }
             }
-            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.focus == Focus::Projects && !self.busy {
                     self.local_expanded = !self.local_expanded;
                     self.rebuild_project_items();
                 }
             }
-            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.focus == Focus::Projects && !self.busy {
                     self.archived_expanded = !self.archived_expanded;
                     self.rebuild_project_items();
@@ -537,12 +538,6 @@ impl AppState {
                     self.arg_input.push(ch);
                 }
             }
-            KeyCode::PageUp if matches!(self.focus, Focus::Logs) => {
-                self.scroll = self.scroll.saturating_sub(10)
-            }
-            KeyCode::PageDown if matches!(self.focus, Focus::Logs) => {
-                self.scroll = self.scroll.saturating_add(10)
-            }
             KeyCode::PageUp if matches!(self.focus, Focus::Analytics) => {
                 self.analytics.scroll = self.analytics.scroll.saturating_sub(10)
             }
@@ -621,10 +616,8 @@ impl AppState {
                 self.arg_input.push(c);
                 self.mode = TuiMode::Runner;
             }
-            KeyCode::Backspace => {
-                if !self.arg_input.is_empty() {
-                    self.arg_input.pop();
-                }
+            KeyCode::Backspace if !self.arg_input.is_empty() => {
+                self.arg_input.pop();
             }
             _ => {}
         }
@@ -685,7 +678,7 @@ impl AppState {
             return;
         };
         let mut files = Vec::new();
-        collect_files(&root, &root, &mut files);
+        collect_files(&root, &mut files);
         files.sort();
         let mut state = ListState::default();
         state.select(Some(0));
@@ -693,17 +686,17 @@ impl AppState {
     }
 }
 
-fn collect_files(base: &Path, dir: &Path, files: &mut Vec<PathBuf>) {
+fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name == "build" || name.starts_with('.') {
-                        continue;
-                    }
+                if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && (name == "build" || name.starts_with('.'))
+                {
+                    continue;
                 }
-                collect_files(base, &path, files);
+                collect_files(&path, files);
             } else if path.is_file() {
                 files.push(path);
             }
@@ -760,10 +753,10 @@ pub async fn run_tui(
                         None
                     }
                 }) => {
-                    if let Ok(Some(event)) = result {
-                        if event_tx.send(event).is_err() {
-                            break;
-                        }
+                    if let Ok(Some(event)) = result
+                        && event_tx.send(event).is_err()
+                    {
+                        break;
                     }
                 }
             }
@@ -799,21 +792,20 @@ pub async fn run_tui(
                 }
             }
             Some(event) = event_rx.recv() => {
-                if let Event::Key(key) = event {
-                    if key.kind == KeyEventKind::Press {
-                        if (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL))
-                            || (key.code == KeyCode::Char('q') && key.modifiers.is_empty() && app.mode == TuiMode::Runner)
-                            || (key.code == KeyCode::Esc && app.mode == TuiMode::Runner && app.editor_pick.is_none())
-                        {
-                            break;
-                        }
-                        app.handle_key(key).await;
+                if let Event::Key(key) = event
+                    && key.kind == KeyEventKind::Press
+                {
+                    if (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL))
+                        || (key.code == KeyCode::Esc && app.mode == TuiMode::Runner && app.editor_pick.is_none())
+                    {
+                        break;
+                    }
+                    app.handle_key(key).await;
 
-                        if let Some(path) = app.pending_edit.take() {
-                            edit_file(&mut terminal, &path)
-                                .await
-                                .map_err(|e| CiteError::Config(format!("{e}")))?;
-                        }
+                    if let Some(path) = app.pending_edit.take() {
+                        edit_file(&mut terminal, &path)
+                            .await
+                            .map_err(|e| CiteError::Config(format!("{e}")))?;
                     }
                 }
             }
@@ -1083,7 +1075,7 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
     let help_text = match app.mode {
         TuiMode::CommandPalette => "[↑/↓] [Enter] [Esc]",
         TuiMode::Runner => match app.focus {
-            Focus::Projects => "[↑/↓] [Ctrl+R] [Enter] [Alt+E/L/A]",
+            Focus::Projects => "[↑/↓] [Ctrl+R] [Enter] [Ctrl+E/L/A]",
             Focus::Commands => {
                 let has_args = !CMDS[app.cmds_state.selected().unwrap_or(0)]
                     .args_hint
@@ -1094,8 +1086,8 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
                     "[←/→] [Enter]"
                 }
             }
-            Focus::Analytics => "[↑/↓] [Ctrl+R] [Enter] [Alt+P/T/B/D]",
-            Focus::Logs => "[↑/↓] [PgUp/PgDn]",
+            Focus::Analytics => "[↑/↓] [Ctrl+R] [Enter] [Ctrl+P/T/B/D]",
+            Focus::Logs => "[↑/↓]",
         },
     };
 
@@ -1217,7 +1209,7 @@ fn render_editor_pick(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let items: Vec<ListItem> = pick
         .files
         .iter()
-        .map(|f| ListItem::new(f.strip_prefix(&root).unwrap_or(f).to_string_lossy()))
+        .map(|f| ListItem::new(f.strip_prefix(root).unwrap_or(f).to_string_lossy()))
         .collect();
     let edit_block = Block::default()
         .borders(Borders::ALL)
