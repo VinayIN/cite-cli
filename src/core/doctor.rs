@@ -304,14 +304,33 @@ fn validate_metadata(ctx: &ProjectContext, errors: &mut Vec<String>, warnings: &
             }
         }
 
-        if let Some(ref cit) = pod.citation {
-            let cit_path = ctx.root.join(cit);
-            if !cit_path.exists() {
-                errors.push(format!(
-                    "Podcast '{}' references citation file '{}' which does not exist",
-                    pod.title, cit
-                ));
+        let mut citation_count = 0usize;
+        for item in &pod.timeline {
+            match item {
+                crate::core::metadata::TimelineItem::Citation(cit) => {
+                    citation_count += 1;
+                    if !ctx.root.join(cit).exists() {
+                        errors.push(format!(
+                            "Podcast '{}' references citation file '{cit}' which does not exist",
+                            pod.title
+                        ));
+                    }
+                }
+                crate::core::metadata::TimelineItem::News(id) => {
+                    if *id <= 0 {
+                        errors.push(format!(
+                            "Podcast '{}' has invalid timeline news id {id} (must be positive)",
+                            pod.title
+                        ));
+                    }
+                }
             }
+        }
+        if citation_count > 1 {
+            errors.push(format!(
+                "Podcast '{}' declares {citation_count} citation files (at most one)",
+                pod.title
+            ));
         }
 
         if let Some(ref audio) = pod.audio {
@@ -480,7 +499,7 @@ fn validate_images(ctx: &ProjectContext, errors: &mut Vec<String>, _warnings: &m
 
 fn validate_bibtex(ctx: &ProjectContext, errors: &mut Vec<String>, warnings: &mut Vec<String>) {
     for pod in &ctx.metadata.podcasts {
-        let Some(ref citation) = pod.citation else {
+        let Some(citation) = pod.citation() else {
             continue;
         };
         let path = ctx.root.join(citation);
@@ -644,7 +663,7 @@ pub fn lint_all(ctx: &ProjectContext) -> DoctorOutcome {
         }
 
         if word_count > 500 {
-            let has_citation = pod.citation.is_some();
+            let has_citation = pod.citation().is_some();
             if !has_citation {
                 warnings.push(format!(
                     "Podcast '{}' is long ({} words) but has no BibTeX citation file",

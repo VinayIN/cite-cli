@@ -820,7 +820,10 @@ async fn restore_archived(
             category: pod.category.clone(),
             thumbnail: pod.thumbnail.clone(),
             audio: pod.audio.clone(),
-            citation: pod.citation_file.clone(),
+            timeline: match &pod.citation_file {
+                Some(file) => vec![crate::core::metadata::TimelineItem::Citation(file.clone())],
+                None => Vec::new(),
+            },
         });
     }
 

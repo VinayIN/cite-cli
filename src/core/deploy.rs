@@ -13,7 +13,7 @@ use crate::core::compiler::{BundlePodcast, BundleTimeline};
 use crate::core::credentials;
 use crate::core::db::DbManager;
 use crate::core::manifest::BackendConfig;
-use crate::core::metadata::TimelineEntry;
+use crate::core::metadata::{TimelineEntry, TimelineItem};
 use crate::core::project::ProjectContext;
 
 const ASSETS_BUCKET: &str = "assets";
@@ -36,13 +36,6 @@ struct DeploymentRecord {
     news_ids: Vec<i64>,
     timeline_ids: Vec<i64>,
     #[serde(default)]
-    asset_paths: Vec<String>,
-}
-
-#[derive(Debug)]
-struct DeployedPodcast {
-    news_id: i64,
-    timeline_ids: Vec<i64>,
     asset_paths: Vec<String>,
 }
 
@@ -172,15 +165,15 @@ pub async fn deploy(
     let categories = fetch_categories(&dctx).await?;
 
     for pod in &podcasts {
-        let pod_timelines: Vec<&BundleTimeline> = timelines
+        let pod_groups: Vec<&BundleTimeline> = timelines
             .iter()
             .filter(|tl| tl.podcast_id == pod.id)
             .collect();
-        match deploy_podcast(&dctx, pod, &pod_timelines, artist_id, &categories).await {
-            Ok(deployed) => {
-                record.news_ids.push(deployed.news_id);
-                record.timeline_ids.extend(deployed.timeline_ids);
-                record.asset_paths.extend(deployed.asset_paths);
+        match deploy_podcast(&dctx, pod, &pod_groups, artist_id, &categories).await {
+            Ok((news_id, timeline_ids, asset_paths)) => {
+                record.news_ids.push(news_id);
+                record.timeline_ids.extend(timeline_ids);
+                record.asset_paths.extend(asset_paths);
             }
             Err(e) => {
                 warn!("Deploy failed partway: {e}");
@@ -305,10 +298,10 @@ pub async fn deploy_staging(
 async fn deploy_podcast(
     dctx: &DeployContext,
     podcast: &BundlePodcast,
-    pod_timelines: &[&BundleTimeline],
+    pod_groups: &[&BundleTimeline],
     artist_id: Uuid,
     categories: &[Category],
-) -> Result<DeployedPodcast, CiteError> {
+) -> Result<(i64, Vec<i64>, Vec<String>), CiteError> {
     let title = &podcast.podcast.title;
     let content = podcast.content.as_deref();
     let category_id =
@@ -322,7 +315,6 @@ async fn deploy_podcast(
         content.map(word_count),
     )
     .await?;
-
     let news_id = insert_news_row(dctx, title, content, category_id, url_id, artist_id).await?;
     info!("Created news item: {title} (id={news_id})");
 
@@ -360,61 +352,70 @@ async fn deploy_podcast(
         asset_paths.push(audio.storage_path);
     }
 
-    let timeline_ids = deploy_timelines(dctx, pod_timelines, news_id).await?;
+    let timeline_ids =
+        deploy_timeline(dctx, news_id, &podcast.podcast.timeline, pod_groups).await?;
 
-    Ok(DeployedPodcast {
-        news_id,
-        timeline_ids,
-        asset_paths,
-    })
+    Ok((news_id, timeline_ids, asset_paths))
 }
 
-async fn deploy_timelines(
+async fn deploy_timeline(
     dctx: &DeployContext,
-    groups: &[&BundleTimeline],
-    news_id: i64,
+    parent_news_id: i64,
+    items: &[TimelineItem],
+    citation_groups: &[&BundleTimeline],
 ) -> Result<Vec<i64>, CiteError> {
     let mut timeline_ids = Vec::new();
 
-    for entry in groups.iter().flat_map(|group| &group.entries) {
-        let sort_order = (timeline_ids.len() + 1) as i64;
-        if let Some(id) = deploy_timeline_entry(dctx, news_id, entry, sort_order).await? {
-            timeline_ids.push(id);
+    for item in items {
+        match item {
+            TimelineItem::News(id) => {
+                if lookup_row_id(dctx, "news", "id", &id.to_string())
+                    .await?
+                    .is_none()
+                {
+                    return Err(CiteError::Deploy(format!(
+                        "Timeline news item {id} does not exist in the database"
+                    )));
+                }
+                let sort_order = (timeline_ids.len() + 1) as i64;
+                let row_id = insert_row(
+                    dctx,
+                    "timeline_news",
+                    build_map(&[
+                        ("parent_news_id", Value::Number(parent_news_id.into())),
+                        ("child_news_id", Value::Number((*id).into())),
+                        ("sort_order", Value::Number(sort_order.into())),
+                    ]),
+                )
+                .await?;
+                info!("Linked news {parent_news_id} -> {id}");
+                timeline_ids.push(row_id);
+            }
+            TimelineItem::Citation(path) => {
+                let Some(group) = citation_groups.iter().find(|g| g.source == *path) else {
+                    continue;
+                };
+                for entry in &group.entries {
+                    let sort_order = (timeline_ids.len() + 1) as i64;
+                    if let Some(id) =
+                        deploy_citation_event(dctx, parent_news_id, entry, sort_order).await?
+                    {
+                        timeline_ids.push(id);
+                    }
+                }
+            }
         }
     }
 
     Ok(timeline_ids)
 }
 
-async fn deploy_timeline_entry(
+async fn deploy_citation_event(
     dctx: &DeployContext,
     parent_news_id: i64,
     entry: &TimelineEntry,
     sort_order: i64,
 ) -> Result<Option<i64>, CiteError> {
-    let link = entry
-        .link
-        .as_deref()
-        .map(str::trim)
-        .filter(|l| !l.is_empty());
-
-    if let Some(link) = link
-        && let Some(child_news_id) = lookup_news_by_url(dctx, link).await?
-    {
-        info!("Linked timeline event to news {child_news_id}");
-        return insert_row(
-            dctx,
-            "timeline_news",
-            build_map(&[
-                ("parent_news_id", Value::Number(parent_news_id.into())),
-                ("child_news_id", Value::Number(child_news_id.into())),
-                ("sort_order", Value::Number(sort_order.into())),
-            ]),
-        )
-        .await
-        .map(Some);
-    }
-
     let title = entry.title.trim();
     if title.is_empty() {
         warn!("Skipping timeline entry without a title");
@@ -441,7 +442,13 @@ async fn deploy_timeline_entry(
         .as_deref()
         .map(str::trim)
         .filter(|u| !u.is_empty())
-        .or(link);
+        .or_else(|| {
+            entry
+                .link
+                .as_deref()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+        });
     if let Some(url) = url {
         let url_id = ensure_url_id(dctx, Some(url), url, None).await?;
         payload.insert("url_id".into(), Value::Number(url_id.into()));
@@ -460,18 +467,6 @@ async fn deploy_timeline_entry(
 
     info!("Deployed timeline event: {title}");
     insert_row(dctx, "timeline_news", payload).await.map(Some)
-}
-
-async fn lookup_news_by_url(dctx: &DeployContext, url: &str) -> Result<Option<i64>, CiteError> {
-    let Some(url_id) = lookup_row_id(dctx, "urls", "url", url).await? else {
-        warn!("No known source matches timeline link '{url}'; using inline event");
-        return Ok(None);
-    };
-    let news_id = lookup_row_id(dctx, "news", "url_id", &url_id.to_string()).await?;
-    if news_id.is_none() {
-        warn!("No published news matches timeline link '{url}'; using inline event");
-    }
-    Ok(news_id)
 }
 
 fn event_date_rfc3339(date: &str) -> Option<String> {
@@ -995,13 +990,17 @@ async fn resolve_category_id(
     {
         Ok(id) => Ok(id),
         Err(_) => {
-            let available = categories
+            let available = fetch_categories(dctx).await?;
+            if let Some(category) = available.iter().find(|c| c.name.eq_ignore_ascii_case(name)) {
+                return Ok(category.id);
+            }
+            let names = available
                 .iter()
                 .map(|c| c.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
             Err(CiteError::Deploy(format!(
-                "Unknown category '{name}'. Available categories: {available}. Creating new categories requires elevated access."
+                "Unknown category '{name}'. Available categories: {names}. Creating new categories requires elevated access."
             )))
         }
     }
@@ -1385,14 +1384,17 @@ mod http_tests {
             dir.join("metadata.yml"),
             r#"
 podcasts:
-  - id: "p1"
-    title: "Episode One"
+  - title: "Episode One"
     file: content/episode.md
     source_url: "https://example.com/episode"
     category: tech
     thumbnail: assets/image/cover.png
     audio: assets/audio/episode.mp3
-    citation: content/papers.bib
+    timeline:
+      - content/papers.bib
+      - 77
+  - title: "Episode Two"
+    file: content/episode-two.md
 "#,
         )
         .unwrap();
@@ -1403,6 +1405,7 @@ podcasts:
             "# Episode One\nWelcome to the show.",
         )
         .unwrap();
+        std::fs::write(dir.join("content/episode-two.md"), "# Episode Two\nLater.").unwrap();
         std::fs::write(
             dir.join("content/papers.bib"),
             r#"
@@ -1469,19 +1472,13 @@ podcasts:
             w.method(POST).path("/rest/v1/podcasts");
             t.status(200).json_body(serde_json::json!([{ "id": 1 }]));
         });
-        let linked_url_get = server.mock(|w, t| {
-            w.method(GET)
-                .path("/rest/v1/urls")
-                .query_param("url", "eq.https://example.com/related");
-            t.status(200).json_body(serde_json::json!([{ "id": 9 }]));
-        });
-        let news_by_url_get = server.mock(|w, t| {
+        let child_news_get = server.mock(|w, t| {
             w.method(GET)
                 .path("/rest/v1/news")
-                .query_param("url_id", "eq.9");
+                .query_param("id", "eq.77");
             t.status(200).json_body(serde_json::json!([{ "id": 77 }]));
         });
-        let timeline_linked = server.mock(|w, t| {
+        let timeline_child = server.mock(|w, t| {
             w.method(POST)
                 .path("/rest/v1/timeline_news")
                 .body_contains("child_news_id");
@@ -1491,7 +1488,6 @@ podcasts:
             w.method(POST)
                 .path("/rest/v1/timeline_news")
                 .body_contains("title")
-                .body_contains("event_date")
                 .body_contains("sort_order");
             t.status(200).json_body(serde_json::json!([{ "id": 1 }]));
         });
@@ -1530,36 +1526,39 @@ podcasts:
             .await
             .expect("deploy should succeed");
 
-        assert_eq!(news.hits(), 1, "one news row with artist_id");
+        assert_eq!(news.hits(), 2, "one news row per podcast");
+        assert_eq!(
+            child_news_get.hits(),
+            1,
+            "remote child news id verified before linking"
+        );
         assert_eq!(news_patch.hits(), 1, "thumbnail patched after upload");
         assert_eq!(
             categories_post.hits(),
-            1,
-            "category created via best-effort insert"
+            2,
+            "best-effort category insert per podcast (mock always succeeds)"
         );
         assert_eq!(
             urls.hits(),
-            1,
-            "one url row (news source; citation has no url)"
+            3,
+            "news sources plus fallback url for Episode Two plus citation event url"
         );
-        assert_eq!(domains.hits(), 1, "domain created via best-effort insert");
+        assert_eq!(domains.hits(), 2, "domain created via best-effort insert");
         assert_eq!(
             podcasts.hits(),
             1,
             "podcast row with storage path + duration"
         );
         assert_eq!(
-            timeline_inline.hits(),
+            timeline_child.hits(),
             1,
-            "inline timeline event from citation"
+            "news id ref linked as timeline row"
         );
         assert_eq!(
-            timeline_linked.hits(),
-            1,
-            "citation link resolved to its news item"
+            timeline_inline.hits(),
+            2,
+            "citation events deployed as inline events"
         );
-        assert_eq!(linked_url_get.hits(), 1, "link resolved through urls table");
-        assert_eq!(news_by_url_get.hits(), 1, "child news looked up by url_id");
         assert!(storage_post.hits() >= 1, "bundle/asset uploads");
         assert!(artists_get.hits() >= 1, "artist existence checked");
         assert_eq!(
@@ -1583,8 +1582,8 @@ podcasts:
 
         rollback(&ctx, &id).await.expect("rollback should succeed");
 
-        assert_eq!(del_timeline.hits(), 2, "timeline events deleted");
-        assert_eq!(del_news.hits(), 1, "news deleted");
+        assert_eq!(del_timeline.hits(), 3, "timeline rows deleted");
+        assert_eq!(del_news.hits(), 2, "news deleted");
         assert!(storage_del.hits() >= 1, "storage object deleted");
         assert_eq!(
             std::fs::read_dir(&deployments_dir).unwrap().count(),

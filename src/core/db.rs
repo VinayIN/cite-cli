@@ -235,7 +235,7 @@ impl DbManager {
                         pod.category.clone(),
                         pod.thumbnail.clone(),
                         pod.audio.clone(),
-                        pod.citation.clone(),
+                        pod.citation().map(str::to_string),
                         content,
                         wc,
                     ],
@@ -244,7 +244,7 @@ impl DbManager {
         }
 
         for pod in &ctx.metadata.podcasts {
-            if let Some(cit) = &pod.citation {
+            if let Some(cit) = pod.citation() {
                 let bib_path = ctx.root.join(cit);
                 if bib_path.exists()
                     && let Ok(raw) = std::fs::read_to_string(&bib_path)

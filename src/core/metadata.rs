@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TimelineItem {
+    Citation(String),
+    News(i64),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Podcast {
@@ -18,8 +25,17 @@ pub struct Podcast {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub citation: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timeline: Vec<TimelineItem>,
+}
+
+impl Podcast {
+    pub fn citation(&self) -> Option<&str> {
+        self.timeline.iter().find_map(|item| match item {
+            TimelineItem::Citation(path) => Some(path.as_str()),
+            TimelineItem::News(_) => None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,8 +75,8 @@ impl Metadata {
         let mut files = Vec::new();
         for p in &self.podcasts {
             files.push(p.file.clone());
-            if let Some(cit) = &p.citation {
-                files.push(cit.clone());
+            if let Some(cit) = p.citation() {
+                files.push(cit.to_string());
             }
             if let Some(audio) = &p.audio {
                 files.push(audio.clone());
@@ -85,15 +101,33 @@ podcasts:
     file: content/test.md
     source_url: "https://example.com"
     category: "tech"
+    timeline:
+      - content/test.bib
+      - 26
 "#;
         let meta: Metadata = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(meta.podcasts.len(), 1);
         assert_eq!(meta.podcasts[0].title, "Test Podcast");
-        assert_eq!(meta.podcasts[0].file, "content/test.md");
         assert_eq!(
             meta.podcasts[0].source_url.as_deref(),
             Some("https://example.com")
         );
+        assert_eq!(
+            meta.podcasts[0].timeline,
+            vec![
+                TimelineItem::Citation("content/test.bib".to_string()),
+                TimelineItem::News(26),
+            ]
+        );
+        assert_eq!(meta.podcasts[0].citation(), Some("content/test.bib"));
+    }
+
+    #[test]
+    fn test_yaml_parse_without_timeline() {
+        let meta: Metadata =
+            serde_yaml::from_str("podcasts:\n  - title: T\n    file: f.md\n").unwrap();
+        assert!(meta.podcasts[0].timeline.is_empty());
+        assert_eq!(meta.podcasts[0].citation(), None);
     }
 
     #[test]
@@ -106,7 +140,7 @@ podcasts:
                 category: None,
                 thumbnail: Some("assets/image/p.jpg".into()),
                 audio: Some("assets/audio/p.mp3".into()),
-                citation: Some("content/p.bib".into()),
+                timeline: vec![TimelineItem::Citation("content/p.bib".into())],
             }],
         };
 

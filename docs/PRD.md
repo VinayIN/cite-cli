@@ -112,7 +112,9 @@ podcasts:
     category: "artificial intelligence"
     audio: assets/audio/episode.mp3
     thumbnail: assets/image/thumb.jpg
-    citation: content/my-article.bib
+    timeline:
+      - content/my-article.bib # BibTeX citation file -> inline events
+      - 26                     # existing news item id -> linked row
 ```
 
 Rules:
@@ -122,9 +124,10 @@ Rules:
 - markdown remains separate from metadata
 - no slugs
 - no audio tiers
-- no relationship metadata
-- relationships are resolved during deployment
-- audio, thumbnail, source_url, and citation are optional fields
+- `timeline` is a single ordered list mixing one BibTeX citation file (string path) with existing news item ids (integers); deploy writes its rows to `timeline_news` in declaration order, sharing one sort_order sequence
+- linking between own episodes uses their deployed news ids, not titles
+- other relationships are resolved during deployment
+- audio, thumbnail, source_url, and timeline are optional fields
 
 ---
 

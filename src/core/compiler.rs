@@ -8,7 +8,7 @@ use crate::core::CiteError;
 use crate::core::cache::{UuidCache, hash_files};
 use crate::core::db::DbManager;
 use crate::core::media::{AudioMeta, ImageMeta, extract_audio, extract_image};
-use crate::core::metadata::{Podcast, TimelineEntry};
+use crate::core::metadata::{Podcast, TimelineEntry, TimelineItem};
 use crate::core::project::ProjectContext;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +36,7 @@ pub struct BundlePodcast {
 pub struct BundleTimeline {
     pub id: String,
     pub podcast_id: String,
+    pub source: String,
     pub entries: Vec<TimelineEntry>,
 }
 
@@ -207,7 +208,10 @@ async fn build_bundle(
             thumbnail_meta,
         });
 
-        if let Some(citation) = &p.citation {
+        for item in &p.timeline {
+            let TimelineItem::Citation(citation) = item else {
+                continue;
+            };
             let bib_src = ctx.root.join(citation);
             if bib_src.exists() {
                 let bib_content = tokio::fs::read_to_string(&bib_src).await?;
@@ -225,6 +229,7 @@ async fn build_bundle(
                     timelines.push(BundleTimeline {
                         id: tl_id,
                         podcast_id: id.clone(),
+                        source: citation.clone(),
                         entries,
                     });
                 }

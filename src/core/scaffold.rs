@@ -72,7 +72,7 @@ fn metadata_template() -> Result<String, CiteError> {
 #   category:  Category name (optional)\n\
 #   thumbnail: Path under assets/image (optional)\n\
 #   audio:     Path under assets/audio (optional)\n\
-#   citation:  Path to BibTeX file (optional)\n\
+#   timeline:  Mixed list of one BibTeX citation file and news item ids\n\
 {}\n",
         body.trim_end(),
     ))
