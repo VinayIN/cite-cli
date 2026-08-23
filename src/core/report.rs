@@ -17,6 +17,9 @@ pub enum CiteError {
     Deploy(String),
 
     #[error("{0}")]
+    Database(String),
+
+    #[error("{0}")]
     Network(#[from] reqwest::Error),
 }
 
@@ -35,5 +38,17 @@ impl From<toml::de::Error> for CiteError {
 impl From<serde_json::Error> for CiteError {
     fn from(e: serde_json::Error) -> Self {
         CiteError::Parse(format!("JSON error: {}", e))
+    }
+}
+
+impl From<libsql::Error> for CiteError {
+    fn from(e: libsql::Error) -> Self {
+        CiteError::Database(format!("SQLite error: {}", e))
+    }
+}
+
+impl From<toml::ser::Error> for CiteError {
+    fn from(e: toml::ser::Error) -> Self {
+        CiteError::Config(format!("TOML serialize error: {}", e))
     }
 }

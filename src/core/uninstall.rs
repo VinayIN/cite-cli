@@ -1,9 +1,11 @@
 use std::io::Write;
+use std::path::PathBuf;
 
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 
 use crate::core::CiteError;
 
+#[instrument]
 pub fn uninstall(force: bool) -> Result<(), CiteError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| CiteError::Config(format!("Cannot determine executable path: {e}")))?;
@@ -42,7 +44,23 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
         info!("Removed empty directory {}", install_dir.display());
     }
 
+    // Remove local database, session, and credentials
     let home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
+    let cite_dir = PathBuf::from(&home).join(".cite");
+    if cite_dir.exists() {
+        let _ = std::fs::remove_file(cite_dir.join("cite.db"));
+        let _ = std::fs::remove_file(cite_dir.join("session.json"));
+        let _ = std::fs::remove_file(cite_dir.join("credentials.toml"));
+        info!("Removed ~/.cite/cite.db, session.json, and credentials.toml");
+        if std::fs::read_dir(&cite_dir)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(true)
+        {
+            let _ = std::fs::remove_dir(&cite_dir);
+            info!("Removed empty ~/.cite directory");
+        }
+    }
+
     let shell_files = [
         format!("{home}/.zshrc"),
         format!("{home}/.bashrc"),
@@ -62,7 +80,7 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
         info!("  Edit ~/.zshrc, ~/.bashrc, etc. and remove lines containing:");
         info!("    {install_dir_str}");
         info!("  Then restart your shell or run: source ~/.zshrc");
-    };
+    }
     info!("cite-cli has been uninstalled");
     Ok(())
 }

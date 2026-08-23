@@ -1,20 +1,30 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
+    symbols,
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Tabs, Wrap,
+    },
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::core::CiteError;
-use crate::core::project::{self, ProjectContext};
+use crate::core::db::DbManager;
+use crate::core::manifest::{Manifest, ProjectConfig};
+use crate::core::metadata::{Metadata, Podcast};
+use crate::core::project::{
+    self, AllStats, ProjectContext, ProjectStats, RestoredTimeline, StoredBuild, StoredDeployment,
+    StoredTimeline,
+};
 use crate::core::{compiler, deploy, doctor, scaffold};
 
 struct TerminalGuard;
@@ -24,63 +34,6 @@ impl Drop for TerminalGuard {
         ratatui::restore();
     }
 }
-
-// Main entry point for the TUI
-pub async fn run_tui(mut log_rx: mpsc::UnboundedReceiver<String>) -> Result<(), CiteError> {
-    let mut terminal = ratatui::init();
-    let _guard = TerminalGuard;
-
-    terminal
-        .clear()
-        .map_err(|e| CiteError::Config(format!("{e}")))?;
-
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let mut app = AppState::new(&cwd);
-
-    loop {
-        terminal
-            .draw(|f| render(f, &mut app))
-            .map_err(|e| CiteError::Config(format!("{e}")))?;
-
-        tokio::select! {
-            biased;
-            Some(()) = app.rx.recv() => {
-                app.busy = false;
-                app.task = None;
-                app.refresh_projects();
-            }
-            _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                if app.busy && app.task.as_ref().map_or(false, |h| h.is_finished()) {
-                    app.busy = false;
-                    app.task = None;
-                }
-
-                while let Ok(line) = log_rx.try_recv() {
-                    app.log.push(line);
-                    app.scroll = app.log.len().saturating_sub(1);
-                }
-
-                if event::poll(Duration::from_millis(10))
-                    .map_err(|e| CiteError::Config(format!("{e}")))?
-                {
-                    match event::read().map_err(|e| CiteError::Config(format!("{e}")))? {
-                        Event::Key(key) if key.kind == KeyEventKind::Press => {
-                            if key.code == KeyCode::Esc {
-                                break;
-                            }
-                            app.handle_key(key);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-// Data Types
 
 pub struct Cmd {
     pub label: &'static str,
@@ -94,12 +47,9 @@ pub struct Cmd {
 pub enum CommandId {
     Init,
     Build,
-    Lint,
-    Status,
     Doctor,
     Deploy,
     Rollback,
-    Clean,
 }
 
 pub const CMDS: &[Cmd] = &[
@@ -112,219 +62,531 @@ pub const CMDS: &[Cmd] = &[
     },
     Cmd {
         label: "build",
-        desc: "Execute the compiler protocol and build artifact",
+        desc: "Compile project into build/content.json",
         args_hint: "[--force]",
         needs_project: true,
         id: CommandId::Build,
     },
     Cmd {
-        label: "lint",
-        desc: "Run linting rules (naming, style, word counts)",
-        args_hint: "",
-        needs_project: true,
-        id: CommandId::Lint,
-    },
-    Cmd {
-        label: "status",
-        desc: "Show project health, validation, and sync state",
-        args_hint: "",
-        needs_project: true,
-        id: CommandId::Status,
-    },
-    Cmd {
         label: "doctor",
-        desc: "Diagnose common project issues and configuration",
+        desc: "Validate project, metadata, content, and assets",
         args_hint: "",
         needs_project: true,
         id: CommandId::Doctor,
     },
     Cmd {
         label: "deploy",
-        desc: "Deploy the built project to Supabase staging",
-        args_hint: "[--dry-run]",
+        desc: "Upload bundle and sync Supabase backend",
+        args_hint: "[--dry-run] [--staging]",
         needs_project: true,
         id: CommandId::Deploy,
     },
     Cmd {
         label: "rollback",
-        desc: "Roll back to the previous deployment",
+        desc: "Roll back to a previous deployment",
         args_hint: "<deployment id>",
         needs_project: true,
         id: CommandId::Rollback,
     },
-    Cmd {
-        label: "clean",
-        desc: "Remove build artifacts, cache, and temp files",
-        args_hint: "",
-        needs_project: true,
-        id: CommandId::Clean,
-    },
 ];
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum TuiMode {
+    Runner,
+    CommandPalette,
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Focus {
     Projects,
     Commands,
-    Details,
+    Analytics,
     Logs,
 }
 
-impl Focus {
-    fn label(self) -> &'static str {
-        match self {
-            Focus::Projects => "Projects",
-            Focus::Commands => "Commands",
-            Focus::Details => "Details",
-            Focus::Logs => "Logs",
-        }
-    }
+#[derive(Clone, PartialEq)]
+pub enum ProjectItemKind {
+    LocalHeader,
+    LocalProject(usize),
+    ArchivedHeader,
+    ArchivedProject(String),
+}
+
+#[derive(Clone)]
+pub struct ProjectItem {
+    pub kind: ProjectItemKind,
+    pub label: String,
+}
+
+pub struct AnalyticsState {
+    pub stats: Option<ProjectStats>,
+    pub global: Option<AllStats>,
+    pub podcasts: Vec<project::StoredPodcast>,
+    pub timelines: Vec<StoredTimeline>,
+    pub builds: Vec<StoredBuild>,
+    pub deploys: Vec<StoredDeployment>,
+    pub expanded: [bool; 4],
+    pub scroll: usize,
+}
+
+pub struct CommandPaletteState {
+    pub query: String,
+    pub list_state: ListState,
+}
+
+struct EditorPick {
+    files: Vec<PathBuf>,
+    state: ListState,
+    root: PathBuf,
 }
 
 pub struct AppState {
     cwd: PathBuf,
     pub roots: Vec<PathBuf>,
-    pub sel_project: usize,
+    pub db_projects: Vec<(String, String)>,
+    pub project_items: Vec<ProjectItem>,
+    pub projects_state: ListState,
+
     pub focus: Focus,
-    pub sel_cmd: usize,
+    pub cmds_state: ListState,
+
     pub log: Vec<String>,
     pub scroll: usize,
     pub busy: bool,
     pub arg_input: String,
+
+    editor_pick: Option<EditorPick>,
+    pending_edit: Option<PathBuf>,
+    restore_prompt: Option<String>,
+
     rx: mpsc::Receiver<()>,
     tx: mpsc::Sender<()>,
     task: Option<JoinHandle<()>>,
+
+    mode: TuiMode,
+    analytics: AnalyticsState,
+    command_palette: CommandPaletteState,
+
+    local_expanded: bool,
+    archived_expanded: bool,
+    pending_init: bool,
 }
 
 impl AppState {
-    pub fn new(cwd: &Path) -> Self {
+    pub async fn new(cwd: &Path) -> Self {
         let (tx, rx) = mpsc::channel(32);
-        let roots = Self::discover(cwd);
+        let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
 
-        Self {
-            cwd: cwd.to_path_buf(),
-            roots,
-            sel_project: 0,
+        let mut cmds_state = ListState::default();
+        cmds_state.select(Some(0));
+
+        let mut state = Self {
+            cwd: cwd.clone(),
+            roots: Vec::new(),
+            db_projects: Vec::new(),
+            project_items: Vec::new(),
+            projects_state: ListState::default(),
             focus: Focus::Commands,
-            sel_cmd: 0,
+            cmds_state,
             log: vec![],
             scroll: 0,
             busy: false,
             arg_input: String::new(),
+            editor_pick: None,
+            pending_edit: None,
+            restore_prompt: None,
             rx,
             tx,
             task: None,
+            mode: TuiMode::Runner,
+            analytics: AnalyticsState {
+                stats: None,
+                global: None,
+                podcasts: Vec::new(),
+                timelines: Vec::new(),
+                builds: Vec::new(),
+                deploys: Vec::new(),
+                expanded: [true, true, true, true],
+                scroll: 0,
+            },
+            command_palette: CommandPaletteState {
+                query: String::new(),
+                list_state: ListState::default(),
+            },
+            local_expanded: true,
+            archived_expanded: true,
+            pending_init: false,
+        };
+
+        state.refresh_projects().await;
+        state.load_analytics_data().await;
+        state
+    }
+
+    async fn load_db_projects() -> Vec<(String, String)> {
+        if let Ok(db) = DbManager::open().await {
+            db.list_db_projects().await.unwrap_or_default()
+        } else {
+            vec![]
         }
     }
 
-    fn discover(cwd: &Path) -> Vec<PathBuf> {
-        let mut r = project::discover_projects(cwd);
-        r.sort();
-        r
+    async fn refresh_projects(&mut self) {
+        self.roots = project::discover_projects(&self.cwd);
+        self.roots.sort();
+        self.db_projects = Self::load_db_projects().await;
+        self.rebuild_project_items();
     }
 
-    fn refresh_projects(&mut self) {
-        self.cwd = std::env::current_dir().unwrap_or_else(|_| self.cwd.clone());
-        self.roots = Self::discover(&self.cwd);
-        self.sel_project = self.sel_project.min(self.roots.len().saturating_sub(1));
+    fn rebuild_project_items(&mut self) {
+        self.project_items.clear();
+
+        self.project_items.push(ProjectItem {
+            kind: ProjectItemKind::LocalHeader,
+            label: if self.local_expanded {
+                "▼ Local".into()
+            } else {
+                "▶ Local".into()
+            },
+        });
+
+        if self.local_expanded {
+            if self.roots.is_empty() {
+                self.project_items.push(ProjectItem {
+                    kind: ProjectItemKind::LocalProject(usize::MAX),
+                    label: "  (none)".into(),
+                });
+            } else {
+                for (i, root) in self.roots.iter().enumerate() {
+                    let name = root
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    self.project_items.push(ProjectItem {
+                        kind: ProjectItemKind::LocalProject(i),
+                        label: format!("  {}", name),
+                    });
+                }
+            }
+        }
+
+        self.project_items.push(ProjectItem {
+            kind: ProjectItemKind::ArchivedHeader,
+            label: if self.archived_expanded {
+                "▼ Archived".into()
+            } else {
+                "▶ Archived".into()
+            },
+        });
+
+        if self.archived_expanded {
+            let archived = self.compute_archived();
+            if archived.is_empty() {
+                self.project_items.push(ProjectItem {
+                    kind: ProjectItemKind::ArchivedProject("".into()),
+                    label: "  (none)".into(),
+                });
+            } else {
+                for name in archived {
+                    self.project_items.push(ProjectItem {
+                        kind: ProjectItemKind::ArchivedProject(name.clone()),
+                        label: format!("  {name}"),
+                    });
+                }
+            }
+        }
+
+        self.clamp_project_selection();
+    }
+
+    fn clamp_project_selection(&mut self) {
+        if self.project_items.is_empty() {
+            self.projects_state.select(None);
+        } else {
+            let last = self.project_items.len() - 1;
+            match self.projects_state.selected() {
+                Some(sel) => self.projects_state.select(Some(sel.min(last))),
+                None => self.projects_state.select(Some(0)),
+            }
+        }
+    }
+
+    fn compute_archived(&self) -> Vec<String> {
+        self.db_projects
+            .iter()
+            .filter(|(name, id)| {
+                !self.roots.iter().any(|r| {
+                    r.to_string_lossy().as_ref() == id.as_str()
+                        || r.file_name().and_then(|n| n.to_str()) == Some(name.as_str())
+                })
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     fn selected_root(&self) -> Option<PathBuf> {
-        self.roots.get(self.sel_project).cloned()
+        let sel = self.projects_state.selected()?;
+        let item = self.project_items.get(sel)?;
+        if let ProjectItemKind::LocalProject(i) = item.kind
+            && i != usize::MAX
+        {
+            return self.roots.get(i).cloned();
+        }
+        None
     }
 
     fn focus_order(&self) -> Vec<Focus> {
-        let mut order = vec![Focus::Projects, Focus::Commands];
-        if !CMDS[self.sel_cmd].args_hint.is_empty() {
-            order.push(Focus::Details);
-        }
-        order.push(Focus::Logs);
-        order
+        vec![
+            Focus::Projects,
+            Focus::Commands,
+            Focus::Analytics,
+            Focus::Logs,
+        ]
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) {
-        if self.busy {
+    fn filtered_commands(&self) -> Vec<usize> {
+        let query = self.command_palette.query.to_lowercase();
+        CMDS.iter()
+            .enumerate()
+            .filter(|(_, cmd)| {
+                query.is_empty()
+                    || cmd.label.to_lowercase().contains(&query)
+                    || cmd.desc.to_lowercase().contains(&query)
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    fn clamp_palette_selection(&mut self) {
+        let last = self.filtered_commands().len().saturating_sub(1);
+        match self.command_palette.list_state.selected() {
+            Some(sel) => self.command_palette.list_state.select(Some(sel.min(last))),
+            None => self.command_palette.list_state.select(Some(0)),
+        }
+    }
+
+    pub async fn load_analytics_data(&mut self) {
+        let Ok(db) = DbManager::open().await else {
+            return;
+        };
+
+        self.analytics.global = db.get_all_stats().await.ok();
+
+        if let Some(root) = self.selected_root() {
+            let project_id = root.to_string_lossy().to_string();
+            self.analytics.stats = db.get_project_stats(&project_id).await.ok();
+            self.analytics.podcasts = db
+                .get_podcasts_with_content(&project_id)
+                .await
+                .ok()
+                .unwrap_or_default();
+            self.analytics.timelines = db.get_timelines(&project_id).await.ok().unwrap_or_default();
+            self.analytics.builds = db
+                .get_build_history(&project_id)
+                .await
+                .ok()
+                .unwrap_or_default();
+            self.analytics.deploys = db
+                .get_deployment_history(&project_id)
+                .await
+                .ok()
+                .unwrap_or_default();
+        }
+
+        self.analytics.scroll = 0;
+    }
+
+    pub async fn handle_key(&mut self, key: KeyEvent) {
+        if (key.code == KeyCode::Char('p') || key.code == KeyCode::Char('P'))
+            && (key.modifiers.contains(KeyModifiers::SUPER)
+                || (key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.modifiers.contains(KeyModifiers::SHIFT)))
+        {
+            self.mode = match self.mode {
+                TuiMode::CommandPalette => TuiMode::Runner,
+                TuiMode::Runner => TuiMode::CommandPalette,
+            };
             return;
         }
 
-        let has_args = !CMDS[self.sel_cmd].args_hint.is_empty();
+        match self.mode {
+            TuiMode::Runner => self.handle_runner_key(key).await,
+            TuiMode::CommandPalette => self.handle_command_palette_key(key),
+        }
+    }
+
+    async fn handle_runner_key(&mut self, key: KeyEvent) {
+        if self.restore_prompt.is_some() {
+            self.handle_restore_key(key).await;
+            return;
+        }
+        if self.editor_pick.is_some() {
+            self.handle_pick_key(key);
+            return;
+        }
 
         match key.code {
-            KeyCode::Tab => {
-                let order = self.focus_order();
-                let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);
-                self.focus = order[(i + 1) % order.len()];
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if !self.busy {
+                    self.refresh_projects().await;
+                    self.load_analytics_data().await;
+                    self.log.clear();
+                    self.scroll = 0;
+                    info!(">> Refreshed");
+                }
             }
-            KeyCode::BackTab => {
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.focus == Focus::Projects && !self.busy {
+                    self.open_edit_picker();
+                }
+            }
+            KeyCode::Char('p' | 't' | 'b' | 'd')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                if self.focus == Focus::Analytics && !self.busy {
+                    let idx = match key.code {
+                        KeyCode::Char('p') => 0,
+                        KeyCode::Char('t') => 1,
+                        KeyCode::Char('b') => 2,
+                        _ => 3,
+                    };
+                    self.analytics.expanded[idx] = !self.analytics.expanded[idx];
+                }
+            }
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.focus == Focus::Projects && !self.busy {
+                    self.local_expanded = !self.local_expanded;
+                    self.rebuild_project_items();
+                }
+            }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.focus == Focus::Projects && !self.busy {
+                    self.archived_expanded = !self.archived_expanded;
+                    self.rebuild_project_items();
+                }
+            }
+            _ => self.handle_runner_nav(key).await,
+        }
+    }
+
+    async fn handle_runner_nav(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Tab | KeyCode::BackTab => {
+                if self.busy {
+                    return;
+                }
                 let order = self.focus_order();
                 let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);
                 let n = order.len();
-                self.focus = order[(i + n - 1) % n];
+                self.focus = if key.code == KeyCode::Tab {
+                    order[(i + 1) % n]
+                } else {
+                    order[(i + n - 1) % n]
+                };
             }
             KeyCode::Up => match self.focus {
-                Focus::Projects => self.sel_project = self.sel_project.saturating_sub(1),
-                Focus::Commands | Focus::Details => {
-                    self.sel_cmd = self.sel_cmd.saturating_sub(1);
-                    if !has_args {
-                        self.focus = Focus::Commands;
-                    }
+                Focus::Projects if !self.busy => self.projects_state.select_previous(),
+                Focus::Analytics => {
+                    self.analytics.scroll = self.analytics.scroll.saturating_sub(1);
                 }
                 Focus::Logs => self.scroll = self.scroll.saturating_sub(1),
-            },
-            KeyCode::Down => match self.focus {
-                Focus::Projects => {
-                    self.sel_project =
-                        (self.sel_project + 1).min(self.roots.len().saturating_sub(1));
-                }
-                Focus::Commands | Focus::Details => {
-                    self.sel_cmd = (self.sel_cmd + 1).min(CMDS.len().saturating_sub(1));
-                    if !has_args {
-                        self.focus = Focus::Commands;
-                    }
-                }
-                Focus::Logs => self.scroll = self.scroll.saturating_add(1),
-            },
-            KeyCode::Enter => match self.focus {
-                Focus::Projects => self.focus = Focus::Commands,
-                Focus::Commands | Focus::Details => self.start_cmd(),
                 _ => {}
             },
-            KeyCode::Backspace => {
-                if matches!(self.focus, Focus::Details) {
+            KeyCode::Down => match self.focus {
+                Focus::Projects if !self.busy => self.projects_state.select_next(),
+                Focus::Analytics => {
+                    self.analytics.scroll = self.analytics.scroll.saturating_add(1);
+                }
+                Focus::Logs => self.scroll = self.scroll.saturating_add(1),
+                _ => {}
+            },
+            KeyCode::Left => match self.focus {
+                Focus::Commands if !self.busy => {
+                    let sel = self.cmds_state.selected().unwrap_or(0);
+                    if sel > 0 {
+                        self.cmds_state.select(Some(sel - 1));
+                    }
+                }
+                _ => {}
+            },
+            KeyCode::Right => match self.focus {
+                Focus::Commands if !self.busy => {
+                    let sel = self.cmds_state.selected().unwrap_or(0);
+                    if sel + 1 < CMDS.len() {
+                        self.cmds_state.select(Some(sel + 1));
+                    }
+                }
+                _ => {}
+            },
+            KeyCode::Enter => {
+                if !self.busy {
+                    match self.focus {
+                        Focus::Projects => {
+                            let Some(sel) = self.projects_state.selected() else {
+                                return;
+                            };
+                            let Some(item) = self.project_items.get(sel) else {
+                                return;
+                            };
+                            match &item.kind {
+                                ProjectItemKind::LocalHeader => {
+                                    self.local_expanded = !self.local_expanded;
+                                    self.rebuild_project_items();
+                                }
+                                ProjectItemKind::ArchivedHeader => {
+                                    self.archived_expanded = !self.archived_expanded;
+                                    self.rebuild_project_items();
+                                }
+                                ProjectItemKind::LocalProject(_) => {
+                                    info!(">> Selected project ");
+                                    self.load_analytics_data().await;
+                                }
+                                ProjectItemKind::ArchivedProject(name) => {
+                                    self.restore_prompt = Some(name.clone());
+                                }
+                            }
+                        }
+                        Focus::Commands => self.start_cmd(),
+                        _ => {}
+                    }
+                }
+            }
+            KeyCode::Backspace if !self.busy => {
+                if matches!(self.focus, Focus::Commands)
+                    && !CMDS[self.cmds_state.selected().unwrap_or(0)]
+                        .args_hint
+                        .is_empty()
+                {
                     self.arg_input.pop();
                 }
             }
-            KeyCode::Char('r') if !matches!(self.focus, Focus::Details) => {
-                self.refresh_projects();
-                self.log.clear();
-                self.log.push("Refreshed".into());
-                self.scroll = 0;
-            }
-            KeyCode::Char(ch) => {
-                if matches!(self.focus, Focus::Details) {
+            KeyCode::Char(ch) if !self.busy => {
+                if matches!(self.focus, Focus::Commands)
+                    && !CMDS[self.cmds_state.selected().unwrap_or(0)]
+                        .args_hint
+                        .is_empty()
+                {
                     self.arg_input.push(ch);
                 }
             }
-            KeyCode::PageUp => {
-                if matches!(self.focus, Focus::Logs) {
-                    self.scroll = self.scroll.saturating_sub(10);
-                }
+            KeyCode::PageUp if matches!(self.focus, Focus::Analytics) => {
+                self.analytics.scroll = self.analytics.scroll.saturating_sub(10)
             }
-            KeyCode::PageDown => {
-                if matches!(self.focus, Focus::Logs) {
-                    self.scroll = self.scroll.saturating_add(10);
-                }
+            KeyCode::PageDown if matches!(self.focus, Focus::Analytics) => {
+                self.analytics.scroll = self.analytics.scroll.saturating_add(10)
             }
             _ => {}
         }
     }
 
-    fn start_cmd(&mut self) {
+    pub fn start_cmd(&mut self) {
         let root = self.selected_root();
-        let cmd = &CMDS[self.sel_cmd];
+        let sel = self.cmds_state.selected().unwrap_or(0);
+        let cmd = &CMDS[sel];
 
         if cmd.needs_project && root.is_none() {
-            self.log
-                .push("!! No projects found — select or init a project first".into());
+            error!("No projects found; select or init a project first");
             return;
         }
 
@@ -332,51 +594,451 @@ impl AppState {
         let arg_display = if raw_args.is_empty() {
             String::new()
         } else {
-            format!(" ({raw_args})")
+            format!(" ({})", raw_args)
         };
-
-        self.log.push(format!(
+        info!(
             ">> {}{} {}",
             cmd.label,
             arg_display,
             root.as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default()
-        ));
+        );
 
         self.busy = true;
+        self.pending_init = cmd.id == CommandId::Init;
         let id = cmd.id;
         let tx = self.tx.clone();
+        let cwd = self.cwd.clone();
 
         let handle = tokio::spawn(async move {
             match id {
-                CommandId::Init => exec_init(root, raw_args).await,
+                CommandId::Init => exec_init(cwd, raw_args).await,
                 CommandId::Build => exec_build(root, raw_args).await,
-                CommandId::Lint => exec_lint(root, raw_args).await,
-                CommandId::Status => exec_status(root, raw_args).await,
                 CommandId::Doctor => exec_doctor(root, raw_args).await,
                 CommandId::Deploy => exec_deploy(root, raw_args).await,
                 CommandId::Rollback => exec_rollback(root, raw_args).await,
-                CommandId::Clean => exec_clean(root, raw_args).await,
             }
             let _ = tx.send(()).await;
         });
         self.task = Some(handle);
     }
+
+    fn handle_command_palette_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = TuiMode::Runner;
+                self.command_palette.query.clear();
+            }
+            KeyCode::Up => {
+                self.command_palette.list_state.select_previous();
+                self.clamp_palette_selection();
+            }
+            KeyCode::Down => {
+                let len = self.filtered_commands().len();
+                let sel = self.command_palette.list_state.selected().unwrap_or(0);
+                if sel + 1 < len {
+                    self.command_palette.list_state.select(Some(sel + 1));
+                }
+            }
+            KeyCode::Enter => {
+                let filtered = self.filtered_commands();
+                if let Some(&cmd_idx) = self
+                    .command_palette
+                    .list_state
+                    .selected()
+                    .and_then(|i| filtered.get(i))
+                {
+                    self.cmds_state.select(Some(cmd_idx));
+                    self.mode = TuiMode::Runner;
+                    self.focus = Focus::Commands;
+                    self.command_palette.query.clear();
+                    self.start_cmd();
+                }
+            }
+            KeyCode::Backspace => {
+                self.command_palette.query.pop();
+                self.clamp_palette_selection();
+            }
+            KeyCode::Char(c) => {
+                self.command_palette.query.push(c);
+                self.clamp_palette_selection();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_pick_key(&mut self, key: KeyEvent) {
+        let Some(pick) = self.editor_pick.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Up => pick.state.select_previous(),
+            KeyCode::Down => pick.state.select_next(),
+            KeyCode::Enter => {
+                if let Some(idx) = pick.state.selected() {
+                    self.pending_edit = pick.files.get(idx).cloned();
+                    self.editor_pick = None;
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => self.editor_pick = None,
+            _ => {}
+        }
+    }
+
+    async fn handle_restore_key(&mut self, key: KeyEvent) {
+        let Some(name) = self.restore_prompt.clone() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                let target = self.cwd.join(&name);
+                match restore_archived(&target, &name, &self.db_projects).await {
+                    Ok((podcasts, timelines, warnings)) => {
+                        info!(
+                            "Restored project {name} at {} ({podcasts} podcast(s), {timelines} timeline event(s))",
+                            target.display()
+                        );
+                        for warning in warnings {
+                            warn!("{warning}");
+                        }
+                    }
+                    Err(e) => {
+                        warn!("No local snapshot to restore ({e}); scaffolding fresh project");
+                        if let Err(e) = scaffold::init_project(&name, &target) {
+                            error!("Failed to restore project: {e}");
+                        } else {
+                            info!("Created fresh project {name} at {}", target.display());
+                        }
+                    }
+                }
+                self.restore_prompt = None;
+                self.refresh_projects().await;
+                self.load_analytics_data().await;
+                if let Some(idx) = self
+                    .project_items
+                    .iter()
+                    .position(|item| matches!(&item.kind, ProjectItemKind::LocalProject(_)))
+                {
+                    self.projects_state.select(Some(idx));
+                    self.open_edit_picker();
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
+                self.restore_prompt = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn open_edit_picker(&mut self) {
+        let Some(root) = self.selected_root() else {
+            error!("No project selected");
+            return;
+        };
+        let mut files = Vec::new();
+        collect_files(&root, &mut files);
+        files.sort();
+        let mut state = ListState::default();
+        state.select(Some(0));
+        self.editor_pick = Some(EditorPick { files, state, root });
+    }
 }
 
-// Rendering
+fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && (name == "build" || name.starts_with('.'))
+                {
+                    continue;
+                }
+                collect_files(&path, files);
+            } else if path.is_file() {
+                files.push(path);
+            }
+        }
+    }
+}
 
-fn block(title: &str, focused: bool) -> Block<'_> {
+async fn restore_archived(
+    target: &Path,
+    name: &str,
+    db_projects: &[(String, String)],
+) -> Result<(usize, usize, Vec<String>), CiteError> {
+    let (_, project_id) = db_projects
+        .iter()
+        .find(|(n, _)| n == name)
+        .ok_or_else(|| CiteError::Config(format!("No local record for '{name}'")))?;
+
+    let db = DbManager::open().await?;
+    let snapshot = db.get_restore_snapshot(project_id).await?;
+
+    tokio::fs::create_dir_all(target).await?;
+    tokio::fs::create_dir_all(target.join("content")).await?;
+
+    let manifest = Manifest {
+        project: ProjectConfig {
+            name: snapshot.name.clone(),
+            language: snapshot.language.clone(),
+            metadata_file: snapshot.metadata_file.clone(),
+            artist_id: snapshot.artist_id.clone(),
+        },
+        ..Default::default()
+    };
+    tokio::fs::write(target.join("cite.toml"), toml::to_string_pretty(&manifest)?).await?;
+
+    let mut warnings = Vec::new();
+    let mut podcasts_meta = Vec::new();
+
+    for pod in &snapshot.podcasts {
+        if pod.file.is_empty() {
+            continue;
+        }
+        match &pod.content {
+            Some(content) => {
+                let path = target.join(&pod.file);
+                if let Some(parent) = path.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+                tokio::fs::write(path, content).await?;
+            }
+            None => warnings.push(format!("Content missing for '{}'; re-add it", pod.title)),
+        }
+        if let Some(audio) = &pod.audio {
+            warnings.push(format!("Re-add audio asset {audio}"));
+        }
+        if let Some(thumbnail) = &pod.thumbnail {
+            warnings.push(format!("Re-add thumbnail asset {thumbnail}"));
+        }
+        podcasts_meta.push(Podcast {
+            title: pod.title.clone(),
+            file: pod.file.clone(),
+            source_url: pod.source_url.clone(),
+            category: pod.category.clone(),
+            thumbnail: pod.thumbnail.clone(),
+            audio: pod.audio.clone(),
+            citation: pod.citation_file.clone(),
+        });
+    }
+
+    let timelines_by_podcast: HashMap<&str, Vec<&RestoredTimeline>> = snapshot
+        .timelines
+        .iter()
+        .map(|tl| (tl.podcast_id.as_str(), tl))
+        .fold(HashMap::new(), |mut groups, (id, tl)| {
+            groups.entry(id).or_default().push(tl);
+            groups
+        });
+
+    for pod in &snapshot.podcasts {
+        let Some(cit) = pod.citation_file.as_deref().filter(|c| !c.is_empty()) else {
+            continue;
+        };
+        let entries = timelines_by_podcast
+            .get(pod.id.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let path = target.join(cit);
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(path, render_bibtex(&entries)).await?;
+    }
+
+    let metadata_file = snapshot.metadata_file.clone();
+    let metadata = Metadata {
+        podcasts: podcasts_meta,
+    };
+    tokio::fs::write(
+        target.join(metadata_file),
+        serde_yaml::to_string(&metadata)?,
+    )
+    .await?;
+
+    Ok((snapshot.podcasts.len(), snapshot.timelines.len(), warnings))
+}
+
+fn render_bibtex(entries: &[&RestoredTimeline]) -> String {
+    const MONTHS: [&str; 12] = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ];
+
+    let mut out = String::new();
+    for (i, entry) in entries.iter().enumerate() {
+        let year = entry
+            .date
+            .as_deref()
+            .and_then(|d| d.get(..4))
+            .unwrap_or("0000");
+        out.push_str(&format!("@misc{{restored{i},\n"));
+        out.push_str(&format!(
+            "  title = {{{}}},\n",
+            sanitize_bib_value(&entry.title)
+        ));
+        out.push_str(&format!("  year = {{{year}}},\n"));
+        if let Some(month) = entry
+            .date
+            .as_deref()
+            .and_then(|d| d.get(5..7))
+            .and_then(|m| m.parse::<usize>().ok())
+            .and_then(|m| MONTHS.get(m.saturating_sub(1)))
+        {
+            out.push_str(&format!("  month = {{{month}}},\n"));
+        }
+        if let Some(summary) = &entry.summary {
+            out.push_str(&format!(
+                "  abstract = {{{}}},\n",
+                sanitize_bib_value(summary)
+            ));
+        }
+        if let Some(url) = &entry.url {
+            out.push_str(&format!("  url = {{{url}}},\n"));
+        }
+        if let Some(link) = &entry.link {
+            out.push_str(&format!("  link = {{{link}}},\n"));
+        }
+        out.push_str("}\n\n");
+    }
+    out
+}
+
+fn sanitize_bib_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !matches!(c, '{' | '}'))
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .collect()
+}
+
+fn block(title: impl Into<String>, focused: bool) -> Block<'static> {
     let border_style = if focused {
-        Style::new().fg(Color::Cyan).bold()
+        Style::new().fg(Color::Cyan)
     } else {
         Style::new()
     };
     Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {title} "))
+        .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(border_style)
+        .title(title.into())
+}
+
+fn color_log_line(l: &str) -> Line<'static> {
+    if l.contains("ERROR") {
+        Line::styled(l.to_string(), Style::new().fg(Color::Red).bold())
+    } else if l.contains("WARN") {
+        Line::styled(l.to_string(), Style::new().fg(Color::Yellow))
+    } else {
+        Line::from(l.to_string())
+    }
+}
+
+pub async fn run_tui(
+    mut log_rx: mpsc::UnboundedReceiver<String>,
+    cli_root: PathBuf,
+) -> Result<(), CiteError> {
+    let mut terminal = ratatui::init();
+    let _guard = TerminalGuard;
+    terminal
+        .clear()
+        .map_err(|e| CiteError::Config(format!("{e}")))?;
+
+    let mut app = AppState::new(&cli_root).await;
+
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
+    let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+
+    let event_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => break,
+                result = tokio::task::spawn_blocking(|| {
+                    if event::poll(std::time::Duration::from_millis(100)).unwrap_or(false) {
+                        event::read().ok()
+                    } else {
+                        None
+                    }
+                }) => {
+                    if let Ok(Some(event)) = result
+                        && event_tx.send(event).is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    loop {
+        terminal
+            .draw(|f| render(f, &mut app))
+            .map_err(|e| CiteError::Config(format!("{e}")))?;
+
+        tokio::select! {
+            biased;
+            Some(()) = app.rx.recv() => {
+                app.busy = false;
+                app.task = None;
+                info!(">> Command complete, refreshing");
+                app.refresh_projects().await;
+                app.load_analytics_data().await;
+                if app.pending_init {
+                    app.pending_init = false;
+                    if !app.project_items.is_empty() {
+                        app.projects_state.select(Some(0));
+                        app.focus = Focus::Projects;
+                    }
+                }
+            }
+            Some(line) = log_rx.recv() => {
+                let was_at_bottom = app.scroll >= app.log.len().saturating_sub(1);
+                app.log.push(line);
+                if was_at_bottom || app.log.len() <= 1 {
+                    app.scroll = app.log.len().saturating_sub(1);
+                }
+            }
+            Some(event) = event_rx.recv() => {
+                if let Event::Key(key) = event
+                    && key.kind == KeyEventKind::Press
+                {
+                    let quit = (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL))
+                        || (key.code == KeyCode::Esc && app.mode == TuiMode::Runner && app.editor_pick.is_none());
+
+                    if quit {
+                        break;
+                    } else if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && app.busy
+                    {
+                        if let Some(task) = app.task.take() {
+                            task.abort();
+                        }
+                        app.busy = false;
+                        app.pending_init = false;
+                        info!(">> Command cancelled");
+                    } else {
+                        app.handle_key(key).await;
+
+                        if let Some(path) = app.pending_edit.take() {
+                            edit_file(&mut terminal, &path)
+                                .await
+                                .map_err(|e| CiteError::Config(format!("{e}")))?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(task) = app.task.take() {
+        task.abort();
+    }
+    let _ = shutdown_tx.send(()).await;
+    let _ = event_task.await;
+    Ok(())
 }
 
 fn render(frame: &mut Frame, app: &mut AppState) {
@@ -387,239 +1049,687 @@ fn render(frame: &mut Frame, app: &mut AppState) {
     ])
     .areas(frame.area());
 
-    render_header(frame, header);
+    render_header(frame, header, app);
     render_body(frame, body, app);
     render_statusbar(frame, status, app);
-}
 
-fn render_header(frame: &mut Frame, area: Rect) {
-    let t = Line::from(vec![Span::styled(
-        format!("v{}", env!("CARGO_PKG_VERSION")),
-        Style::new().fg(Color::DarkGray),
-    )]);
-    frame.render_widget(Paragraph::new(t).alignment(Alignment::Right), area);
-}
-
-fn render_body(frame: &mut Frame, area: Rect, app: &AppState) {
-    let [left, right] = Layout::horizontal([Constraint::Max(25), Constraint::Fill(1)]).areas(area);
-    let [top, bot] = Layout::vertical([Constraint::Max(12), Constraint::Fill(1)]).areas(right);
-    let [cmd_list, cmd_doc] =
-        Layout::horizontal([Constraint::Max(25), Constraint::Fill(1)]).areas(top);
-
-    render_projects(frame, left, app);
-    render_cmds(frame, cmd_list, app);
-    render_cmd_doc(frame, cmd_doc, app);
-    render_log(frame, bot, app);
-}
-
-fn render_projects(frame: &mut Frame, area: Rect, app: &AppState) {
-    let is_focused = matches!(app.focus, Focus::Projects);
-    let inner_width = area.width.saturating_sub(2) as usize;
-    let items: Vec<ListItem> = app
-        .roots
-        .iter()
-        .enumerate()
-        .map(|(i, root)| {
-            let is_selected = i == app.sel_project;
-            let prefix = if is_selected { "▸ " } else { "  " };
-            let name = root.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-            let text = format!("{prefix}{name}");
-            let padded = format!("{text:<width$}", width = inner_width);
-            let style = if is_focused && is_selected {
-                Style::new().bold().bg(Color::Cyan).fg(Color::Black)
-            } else if is_selected {
-                Style::new().bold().fg(Color::Cyan)
-            } else {
-                Style::new()
-            };
-            ListItem::new(Line::from(Span::styled(padded, style))).style(style)
-        })
-        .collect();
-
-    let title = format!("Projects ({})", app.roots.len());
-    frame.render_widget(List::new(items).block(block(&title, is_focused)), area);
-}
-
-fn render_cmds(frame: &mut Frame, area: Rect, app: &AppState) {
-    let is_focused = matches!(app.focus, Focus::Commands);
-    let inner_width = area.width.saturating_sub(2) as usize;
-    let items: Vec<ListItem> = CMDS
-        .iter()
-        .enumerate()
-        .map(|(i, cmd)| {
-            let is_selected = i == app.sel_cmd;
-            let prefix = if is_selected { "▸ " } else { "  " };
-            let text = format!("{prefix}{}", cmd.label);
-            let padded = format!("{text:<width$}", width = inner_width);
-            let style = if is_focused && is_selected {
-                Style::new().bold().bg(Color::Cyan).fg(Color::Black)
-            } else if is_selected {
-                Style::new().bold().fg(Color::Cyan)
-            } else {
-                Style::new()
-            };
-            ListItem::new(Line::from(Span::styled(padded, style))).style(style)
-        })
-        .collect();
-
-    frame.render_widget(List::new(items).block(block("Commands", is_focused)), area);
-}
-
-fn render_cmd_doc(frame: &mut Frame, area: Rect, app: &AppState) {
-    let cmd = &CMDS[app.sel_cmd];
-    let is_focused = matches!(app.focus, Focus::Details);
-    let has_args = !cmd.args_hint.is_empty();
-
-    let mut lines = vec![
-        Line::from(Span::styled(cmd.label, Style::new().bold())),
-        Line::from(""),
-        Line::from(cmd.desc),
-    ];
-
-    if has_args {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::raw("Arguments:")));
-        lines.push(Line::from(Span::raw(format!("  {}", cmd.args_hint))));
-
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::raw("Input: "),
-            Span::styled(
-                if app.arg_input.is_empty() {
-                    "Awaiting input..."
-                } else {
-                    app.arg_input.as_str()
-                },
-                if is_focused {
-                    Style::new()
-                        .bold()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::UNDERLINED)
-                } else {
-                    Style::new().fg(Color::Gray)
-                },
-            ),
-        ]));
+    if app.restore_prompt.is_some() {
+        render_restore_prompt(frame, frame.area(), app);
+    } else if app.editor_pick.is_some() {
+        render_editor_pick(frame, frame.area(), app);
     }
 
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .block(block("Details", is_focused))
-            .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
-fn render_log(frame: &mut Frame, area: Rect, app: &AppState) {
-    let visible_lines = area.height.saturating_sub(3) as usize;
-    let max_scroll = app.log.len().saturating_sub(visible_lines);
-    let scroll_y = app.scroll.min(max_scroll);
-
-    let end = (scroll_y + visible_lines).min(app.log.len());
-    let lines: Vec<Line> = app.log[scroll_y..end]
-        .iter()
-        .map(|l| color_log_line(l.as_str()))
-        .collect();
-
-    let para = Paragraph::new(Text::from(lines))
-        .block(block("Logs", matches!(app.focus, Focus::Logs)))
-        .wrap(Wrap { trim: false });
-
-    frame.render_widget(para, area);
-}
-
-fn color_log_line(l: &str) -> Line<'static> {
-    const TAGS: &[(&str, Color)] = &[
-        ("ERROR", Color::Red),
-        ("WARN", Color::Yellow),
-        ("INFO", Color::Green),
-    ];
-
-    let mut spans = Vec::new();
-    let mut remaining = l;
-
-    for (tag, color) in TAGS {
-        if let Some(idx) = remaining.find(tag) {
-            spans.push(Span::raw(remaining[..idx].to_string()));
-            spans.push(Span::styled(*tag, Style::new().fg(*color).bold()));
-            remaining = &remaining[idx + tag.len()..];
-        }
+    if app.mode == TuiMode::CommandPalette {
+        render_command_palette(frame, frame.area(), app);
     }
-    spans.push(Span::raw(remaining.to_string()));
-    Line::from(spans)
 }
 
-fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
-    let mut left_spans = vec![];
-
-    if app.busy {
-        left_spans.push(Span::styled(
-            " RUNNING ",
-            Style::new().bg(Color::Yellow).fg(Color::Black),
-        ));
+fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
+    let (left_text, style) = if app.busy {
+        let cmd = &CMDS[app.cmds_state.selected().unwrap_or(0)];
+        (
+            format!(" Executing: {} on {} ", cmd.label, app.cwd.display()),
+            Style::new()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
-        left_spans.push(Span::styled(
-            " READY ",
-            Style::new().bg(Color::Green).fg(Color::Black),
-        ));
-    }
+        (
+            " Ready ".to_string(),
+            Style::new().fg(Color::Black).bg(Color::Green),
+        )
+    };
+    let version = Span::styled(
+        format!("v{}", env!("CARGO_PKG_VERSION")),
+        Style::new().dim(),
+    );
 
-    left_spans.push(Span::styled(
-        format!("Panel: {} ", app.focus.label()),
-        Style::new().bold().bg(Color::Cyan).fg(Color::Black),
-    ));
-
-    if let Some(proj_name) = app
-        .selected_root()
-        .and_then(|r| r.file_name().and_then(|n| n.to_str()).map(String::from))
-    {
-        left_spans.push(Span::styled(
-            format!(" {}", proj_name),
-            Style::new().fg(Color::White),
-        ));
-    }
-
-    if app.busy {
-        let cmd = &CMDS[app.sel_cmd];
-        left_spans.push(Span::styled(
-            format!(" Executing: {} ", cmd.label),
-            Style::new().fg(Color::Yellow),
-        ));
-    }
-
-    let right_text = " [Tab/Shift+Tab]:Cycle  [↑/↓]:Nav  [Enter]:Exec  [r]:Refresh  [PgUp/Dn]:Scroll  [Esc]:Quit ";
-
-    let safe_right_len = right_text.len() as u16;
-    let [left_area, right_area] = Layout::horizontal([
-        Constraint::Fill(1),
-        Constraint::Length(safe_right_len.min(area.width.saturating_sub(1))),
-    ])
-    .areas(area);
-
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(10)]).areas(area);
     frame.render_widget(
-        Paragraph::new(Line::from(left_spans))
-            .style(Style::new().bg(Color::DarkGray).fg(Color::White)),
+        Paragraph::new(Line::from(Span::styled(left_text, style))),
         left_area,
     );
-
     frame.render_widget(
-        Paragraph::new(Line::from(right_text))
-            .style(Style::new().bg(Color::DarkGray).fg(Color::Gray))
-            .alignment(Alignment::Right),
+        Paragraph::new(Line::from(version)).alignment(Alignment::Right),
         right_area,
     );
 }
 
-// Command Executors
+fn render_body(frame: &mut Frame, area: Rect, app: &mut AppState) {
+    match app.mode {
+        TuiMode::Runner | TuiMode::CommandPalette => {
+            let [left, middle, right] = Layout::horizontal([
+                Constraint::Max(20),
+                Constraint::Fill(2),
+                Constraint::Fill(1),
+            ])
+            .areas(area);
 
-async fn exec_init(root: Option<PathBuf>, raw: String) {
-    let parent = root
-        .as_deref()
-        .and_then(|r| r.parent())
-        .unwrap_or_else(|| std::path::Path::new("."));
+            render_categorized_project_list(frame, left, app);
+
+            let [cmd_area, logs_area] =
+                Layout::vertical([Constraint::Max(8), Constraint::Min(3)]).areas(middle);
+
+            render_commands_pane(frame, cmd_area, app);
+            render_log(frame, logs_area, app);
+
+            render_analytics_content(frame, right, app);
+        }
+    }
+}
+
+fn render_categorized_project_list(frame: &mut Frame, area: Rect, app: &mut AppState) {
+    let is_focused = matches!(app.focus, Focus::Projects);
+
+    let items: Vec<ListItem> = app
+        .project_items
+        .iter()
+        .map(|item| {
+            let style = match item.kind {
+                ProjectItemKind::LocalHeader | ProjectItemKind::ArchivedHeader => {
+                    if is_focused {
+                        Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new().add_modifier(Modifier::BOLD)
+                    }
+                }
+                _ => Style::new(),
+            };
+            ListItem::new(Line::from(Span::styled(item.label.clone(), style)))
+        })
+        .collect();
+
+    let block_widget = block(" Projects ", is_focused);
+    let inner_area = block_widget.inner(area);
+    frame.render_widget(block_widget, area);
+
+    let list = List::new(items).highlight_style(
+        Style::new()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+    frame.render_stateful_widget(list, inner_area, &mut app.projects_state);
+
+    let total = app.project_items.len();
+    let visible = inner_area.height as usize;
+    if total > visible {
+        let selected = app.projects_state.selected().unwrap_or(0);
+        let max_scroll = total.saturating_sub(visible);
+        let scroll_pos = selected.min(max_scroll);
+        let mut scroll_state = ScrollbarState::default()
+            .content_length(total)
+            .position(scroll_pos);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None),
+            area,
+            &mut scroll_state,
+        );
+    }
+}
+
+fn render_commands_pane(frame: &mut Frame, area: Rect, app: &mut AppState) {
+    let is_focused = matches!(app.focus, Focus::Commands);
+    let block_widget = block(" Commands ", is_focused);
+    let inner = block_widget.inner(area);
+    frame.render_widget(block_widget, area);
+
+    let [tabs_area, doc_area] =
+        Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
+
+    let tab_block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(if is_focused {
+            Style::new().fg(Color::Cyan)
+        } else {
+            Style::default()
+        });
+    let tab_inner = tab_block.inner(tabs_area);
+    frame.render_widget(tab_block, tabs_area);
+
+    let titles: Vec<Line> = CMDS.iter().map(|cmd| Line::from(cmd.label)).collect();
+    let tabs = Tabs::new(titles)
+        .select(app.cmds_state.selected().unwrap_or(0))
+        .divider(symbols::DOT)
+        .highlight_style(Style::new().bold().fg(Color::Cyan));
+    frame.render_widget(tabs, tab_inner);
+
+    let sel = app.cmds_state.selected().unwrap_or(0);
+    let cmd = &CMDS[sel];
+
+    let mut lines = vec![Line::from(vec![Span::raw(format!(
+        "{}: {}",
+        cmd.label, cmd.desc
+    ))])];
+
+    if !cmd.args_hint.is_empty() {
+        lines.push(Line::from(format!("Arguments: {}", cmd.args_hint)));
+        let input_text = if app.arg_input.is_empty() {
+            "Awaiting input...".to_string()
+        } else {
+            app.arg_input.clone()
+        };
+        let cursor_style = if is_focused {
+            Style::new()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::new()
+        };
+        lines.push(Line::from(vec![
+            Span::raw("Input: "),
+            Span::styled(input_text, cursor_style),
+        ]));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true }),
+        doc_area,
+    );
+}
+
+fn render_log(frame: &mut Frame, area: Rect, app: &AppState) {
+    let is_focused = matches!(app.focus, Focus::Logs);
+    let visible_lines = area.height.saturating_sub(2) as usize;
+    let max_scroll = app.log.len().saturating_sub(visible_lines);
+    let scroll_y = app.scroll.min(max_scroll);
+    let end = (scroll_y + visible_lines).min(app.log.len());
+
+    let lines: Vec<Line> = app
+        .log
+        .get(scroll_y..end)
+        .unwrap_or(&[])
+        .iter()
+        .map(|l| color_log_line(l))
+        .collect();
+    let block_widget = block(" Logs ", is_focused);
+    let inner_area = block_widget.inner(area);
+
+    frame.render_widget(block_widget, area);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        inner_area,
+    );
+
+    if app.log.len() > visible_lines {
+        let mut scroll_state = ScrollbarState::default()
+            .content_length(app.log.len())
+            .position(scroll_y);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None),
+            area,
+            &mut scroll_state,
+        );
+    }
+}
+
+fn pane_label(focus: Focus) -> &'static str {
+    match focus {
+        Focus::Projects => " Projects ",
+        Focus::Commands => " Commands ",
+        Focus::Analytics => " Analytics ",
+        Focus::Logs => " Logs ",
+    }
+}
+
+fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
+    let mode_label = match app.mode {
+        TuiMode::Runner => pane_label(app.focus),
+        TuiMode::CommandPalette => " Command Palette ",
+    };
+
+    let help_text = if app.busy {
+        "[Ctrl+C] cancel"
+    } else {
+        match app.mode {
+            TuiMode::CommandPalette => "[type to filter] [↑/↓] [Enter] [Esc]",
+            TuiMode::Runner => match app.focus {
+                Focus::Projects => "[↑/↓] [Ctrl+R] [Enter] [Ctrl+E/L/A]",
+                Focus::Commands => {
+                    let has_args = !CMDS[app.cmds_state.selected().unwrap_or(0)]
+                        .args_hint
+                        .is_empty();
+                    if has_args {
+                        "[←/→] [Enter] [type args]"
+                    } else {
+                        "[←/→] [Enter]"
+                    }
+                }
+                Focus::Analytics => "[↑/↓] [Ctrl+R] [Enter] [Ctrl+P/T/B/D]",
+                Focus::Logs => "[↑/↓]",
+            },
+        }
+    };
+
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Length(18), Constraint::Fill(1)]).areas(area);
+
+    let left_style = Style::new().bold().bg(Color::Cyan).fg(Color::Black);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(mode_label, left_style))),
+        left_area,
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(help_text)).alignment(Alignment::Right),
+        right_area,
+    );
+}
+
+fn render_command_palette(frame: &mut Frame, area: Rect, app: &mut AppState) {
+    let width = 70u16.min(area.width.saturating_sub(4));
+    let height = 15u16.min(area.height.saturating_sub(4));
+    let [_, mid, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(height),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let [_, popup, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(width),
+        Constraint::Fill(1),
+    ])
+    .areas(mid);
+
+    frame.render_widget(Clear, popup);
+    let filtered = app.filtered_commands();
+
+    let items: Vec<ListItem> = filtered
+        .iter()
+        .map(|&cmd_idx| {
+            let cmd = &CMDS[cmd_idx];
+            ListItem::new(format!("{}: {}", cmd.label, cmd.desc))
+        })
+        .collect();
+
+    let palette_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Command Palette ")
+        .border_style(Style::new().fg(Color::Yellow));
+
+    let inner = palette_block.inner(popup);
+    frame.render_widget(palette_block, popup);
+
+    let [input_area, list_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("> ", Style::new().fg(Color::Yellow)),
+            Span::raw(app.command_palette.query.clone()),
+        ])),
+        input_area,
+    );
+
+    if filtered.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No matching commands",
+                Style::new().fg(Color::DarkGray),
+            ))
+            .alignment(Alignment::Center),
+            list_area,
+        );
+        return;
+    }
+
+    let list = List::new(items)
+        .highlight_style(Style::new().bold())
+        .highlight_symbol("▸ ");
+    frame.render_stateful_widget(list, list_area, &mut app.command_palette.list_state);
+}
+
+fn render_restore_prompt(frame: &mut Frame, area: Rect, app: &AppState) {
+    let Some(ref name) = app.restore_prompt else {
+        return;
+    };
+    let width = 50u16.min(area.width.saturating_sub(2));
+    let height = 6u16;
+    let [_, mid, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(height),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let [_, popup, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(width),
+        Constraint::Fill(1),
+    ])
+    .areas(mid);
+
+    let text = Text::from(vec![
+        Line::from(vec![Span::raw(format!(
+            "Restore project \"{}\" Locally?",
+            name
+        ))]),
+        Line::from(""),
+        Line::from(Span::styled("[Y]es  [N]o", Style::new().bold())),
+    ]);
+    let restore_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Restore ")
+        .border_style(Style::new().fg(Color::Yellow));
+    let p = Paragraph::new(text)
+        .block(restore_block)
+        .alignment(Alignment::Center);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(p, popup);
+}
+
+fn render_editor_pick(frame: &mut Frame, area: Rect, app: &mut AppState) {
+    let Some(pick) = &mut app.editor_pick else {
+        return;
+    };
+    let root = &pick.root;
+    let width = 60u16.min(area.width.saturating_sub(2));
+    let height = (pick.files.len() as u16 + 4).min(area.height.saturating_sub(2));
+    let [_, mid, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(height),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let [_, popup, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(width),
+        Constraint::Fill(1),
+    ])
+    .areas(mid);
+
+    let items: Vec<ListItem> = pick
+        .files
+        .iter()
+        .map(|f| ListItem::new(f.strip_prefix(root).unwrap_or(f).to_string_lossy()))
+        .collect();
+    let edit_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Select File to Edit ")
+        .border_style(Style::new().fg(Color::Yellow));
+
+    let list = List::new(items)
+        .block(edit_block)
+        .highlight_style(Style::new().bold())
+        .highlight_symbol("▸ ");
+
+    frame.render_widget(Clear, popup);
+    frame.render_stateful_widget(list, popup, &mut pick.state);
+}
+
+fn render_analytics_content(frame: &mut Frame, area: Rect, app: &AppState) {
+    let mut lines: Vec<Line> = Vec::new();
+    render_analytics_global(&mut lines, &app.analytics);
+    lines.push(Line::from(""));
+    render_analytics_project_stats(&mut lines, &app.analytics);
+
+    let a = &app.analytics;
+    let sections = [
+        ("Podcasts Metadata", podcast_rows(&a.podcasts)),
+        ("Timelines", timeline_rows(&a.timelines)),
+        ("Build History", build_rows(&a.builds)),
+        ("Deployment History", deploy_rows(&a.deploys)),
+    ];
+    for (i, (title, rows)) in sections.into_iter().enumerate() {
+        lines.push(Line::from(""));
+        push_section(&mut lines, title, a.expanded[i], rows);
+    }
+
+    let is_focused = matches!(app.focus, Focus::Analytics);
+    let block_widget = block(" Analytics ", is_focused);
+    let inner_area = block_widget.inner(area);
+    frame.render_widget(block_widget, area);
+
+    let visible_lines = inner_area.height as usize;
+    let total_lines = lines.len();
+    let max_scroll = total_lines.saturating_sub(visible_lines);
+    let scroll_y = app.analytics.scroll.min(max_scroll);
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .wrap(Wrap { trim: false })
+            .scroll((scroll_y as u16, 0)),
+        inner_area,
+    );
+
+    if total_lines > visible_lines {
+        let mut scroll_state = ScrollbarState::default()
+            .content_length(total_lines)
+            .position(scroll_y);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None),
+            area,
+            &mut scroll_state,
+        );
+    }
+}
+
+fn push_section(lines: &mut Vec<Line>, title: &str, expanded: bool, rows: Vec<String>) {
+    lines.push(Line::from(Span::styled(
+        title.to_string(),
+        Style::new().bold(),
+    )));
+    lines.push(Line::from(if expanded { "▼" } else { "▶" }));
+    if expanded {
+        for row in rows {
+            lines.push(Line::from(format!("  {row}")));
+        }
+    }
+}
+
+fn podcast_rows(podcasts: &[project::StoredPodcast]) -> Vec<String> {
+    podcasts
+        .iter()
+        .map(|p| {
+            let tag = if p.category.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", p.category)
+            };
+            let audio_flag = if p.has_audio { " [A]" } else { "" };
+            let thumb_flag = if p.has_thumbnail { " [T]" } else { "" };
+            let file_name = p.file.rsplit('/').next().unwrap_or(&p.file);
+            format!(
+                "{}{}{}{}  ({}w) <{}>",
+                p.title, tag, audio_flag, thumb_flag, p.word_count, file_name
+            )
+        })
+        .collect()
+}
+
+fn timeline_rows(timelines: &[StoredTimeline]) -> Vec<String> {
+    timelines
+        .iter()
+        .map(|t| {
+            let extra = t
+                .entry_type
+                .as_ref()
+                .map(|et| format!(" ({et})"))
+                .unwrap_or_default();
+            let linked = t.url.is_some() || t.link.is_some();
+            format!(
+                "{}  {}{}{}",
+                t.date.as_deref().unwrap_or("??"),
+                t.title,
+                extra,
+                if linked { " ↗" } else { "" }
+            )
+        })
+        .collect()
+}
+
+fn build_rows(builds: &[StoredBuild]) -> Vec<String> {
+    builds
+        .iter()
+        .map(|b| {
+            let date = b.built_at.get(..16).unwrap_or(&b.built_at);
+            let flag = if b.was_incremental {
+                "(incr)"
+            } else {
+                "(full)"
+            };
+            format!(
+                "{} p:{} w:{} {:>4}ms {}",
+                date, b.podcast_count, b.total_words, b.duration_ms, flag
+            )
+        })
+        .collect()
+}
+
+fn deploy_rows(deploys: &[StoredDeployment]) -> Vec<String> {
+    deploys
+        .iter()
+        .map(|d| {
+            let status = if d.success { "ok" } else { "fail" };
+            format!(
+                "{}  {}  {}  n:{} a:{}",
+                d.deployment_id, d.deployed_at, status, d.news_count, d.asset_count
+            )
+        })
+        .collect()
+}
+
+fn render_analytics_global(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
+    lines.push(Line::from(Span::styled(
+        "Global Summary",
+        Style::new().bold(),
+    )));
+    if let Some(ref global) = analytics.global {
+        lines.push(Line::from(format!(
+            "  Projects   : {}",
+            global.project_count
+        )));
+        lines.push(Line::from(format!(
+            "  Podcasts   : {}",
+            global.total_podcasts
+        )));
+        lines.push(Line::from(format!(
+            "  Timelines  : {}",
+            global.total_timelines
+        )));
+        lines.push(Line::from(format!("  Words      : {}", global.total_words)));
+        lines.push(Line::from(format!(
+            "  Builds     : {}",
+            global.total_builds
+        )));
+    } else {
+        lines.push(Line::from("  No data"));
+    }
+}
+
+fn render_analytics_project_stats(lines: &mut Vec<Line>, analytics: &AnalyticsState) {
+    lines.push(Line::from(Span::styled(
+        "Project Statistics",
+        Style::new().bold(),
+    )));
+    if let Some(ref stats) = analytics.stats {
+        lines.push(Line::from(format!(
+            "  Podcasts     : {}",
+            stats.podcast_count
+        )));
+        lines.push(Line::from(format!(
+            "  Total Words  : {}",
+            stats.total_words
+        )));
+        lines.push(Line::from(format!(
+            "  Timelines    : {}",
+            stats.timeline_count
+        )));
+        lines.push(Line::from(format!(
+            "  Builds       : {}",
+            stats.build_count
+        )));
+        lines.push(Line::from(format!(
+            "  Deployments  : {}",
+            stats.deployment_count
+        )));
+        if let Some(ref last) = stats.last_built {
+            lines.push(Line::from(format!(
+                "  Last Build   : {}",
+                last.get(..19).unwrap_or(last)
+            )));
+        }
+        if let Some(ref last) = stats.last_deployed {
+            lines.push(Line::from(format!(
+                "  Last Deploy  : {}",
+                last.get(..19).unwrap_or(last)
+            )));
+        }
+    } else {
+        lines.push(Line::from("  No Project Selected"));
+    }
+}
+
+async fn edit_file(terminal: &mut ratatui::DefaultTerminal, path: &Path) -> std::io::Result<()> {
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string());
+    info!(">> Editing {} in {editor}", path.display());
+    let before = file_digest(path).await;
+
+    ratatui::restore();
+    let editor_clone = editor.clone();
+    let path_clone = path.to_path_buf();
+
+    let status = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(&editor_clone)
+            .arg(&path_clone)
+            .status()
+    })
+    .await
+    .map_err(std::io::Error::other)??;
+
+    *terminal = ratatui::init();
+    terminal.clear()?;
+
+    match status {
+        s if s.success() => {
+            if file_digest(path).await != before {
+                info!("Edited {}", path.display());
+            } else {
+                info!("No changes to {}", path.display());
+            }
+        }
+        s => warn!("Editor exited with {s}"),
+    }
+    Ok(())
+}
+
+async fn file_digest(path: &Path) -> Option<[u8; 32]> {
+    use sha2::Digest;
+    let bytes = tokio::fs::read(path).await.ok()?;
+    Some(sha2::Sha256::digest(&bytes).into())
+}
+
+async fn load_project_context(root: Option<PathBuf>) -> Option<(ProjectContext, DbManager)> {
+    let root = root?;
+    let ctx = match ProjectContext::load(&root) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to load project: {e}");
+            return None;
+        }
+    };
+    let db = match DbManager::open().await {
+        Ok(d) => d,
+        Err(e) => {
+            error!("Failed to open database: {e}");
+            return None;
+        }
+    };
+    Some((ctx, db))
+}
+
+async fn exec_init(cwd: PathBuf, raw: String) {
     let name = raw.split_whitespace().next().unwrap_or("new-project");
-    let target = parent.join(name);
-
+    let target = cwd.join(name);
     match scaffold::init_project(name, &target) {
         Ok(_) => info!("Project '{name}' created at {}", target.display()),
         Err(e) => error!("Init failed: {e}"),
@@ -627,108 +1737,67 @@ async fn exec_init(root: Option<PathBuf>, raw: String) {
 }
 
 async fn exec_build(root: Option<PathBuf>, raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
+    let Some((ctx, db)) = load_project_context(root).await else {
         return;
     };
     let force = raw.split_whitespace().any(|w| w == "--force");
-
-    match ProjectContext::load(&root) {
-        Ok(ctx) => {
-            if let Err(e) = compiler::compile(&ctx, force).await {
-                error!("Build failed: {e}");
-            }
-        }
-        Err(e) => error!("{e}"),
-    }
-}
-
-async fn exec_lint(root: Option<PathBuf>, _raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
-    match ProjectContext::load(&root) {
-        Ok(ctx) => doctor::lint_all(&ctx).emit(),
-        Err(e) => error!("{e}"),
-    }
-}
-
-async fn exec_status(root: Option<PathBuf>, _raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
-    match ProjectContext::load(&root) {
-        Ok(ctx) => project::print_status(&ctx),
-        Err(e) => error!("{e}"),
+    match compiler::compile(&db, &ctx, force).await {
+        Ok(outcome) => outcome.emit(),
+        Err(e) => error!("Build failed: {e}"),
     }
 }
 
 async fn exec_doctor(root: Option<PathBuf>, _raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
+    let Some((ctx, db)) = load_project_context(root).await else {
         return;
     };
-    match ProjectContext::load(&root) {
-        Ok(ctx) => match doctor::run(&ctx) {
-            Ok(o) => {
-                if !o.has_errors() && !o.has_warnings() {
-                    info!("Doctor check complete — no issues found");
-                }
+    match doctor::run(&db, &ctx).await {
+        Ok(o) => {
+            o.emit();
+            project::print_status(&db, &ctx).await;
+            if !o.has_errors() && !o.has_warnings() {
+                info!("Doctor check complete; no issues found");
             }
-            Err(e) => error!("Doctor failed: {e}"),
-        },
-        Err(e) => error!("{e}"),
+        }
+        Err(e) => error!("Doctor failed: {e}"),
     }
 }
 
 async fn exec_deploy(root: Option<PathBuf>, raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
+    let Some((ctx, db)) = load_project_context(root).await else {
         return;
     };
     let dry_run = raw.split_whitespace().any(|w| w == "--dry-run");
-
-    match ProjectContext::load(&root) {
-        Ok(ctx) => match deploy::deploy(&ctx, dry_run).await {
+    let staging = raw.split_whitespace().any(|w| w == "--staging");
+    if staging {
+        match deploy::deploy_staging(&db, &ctx, dry_run).await {
+            Ok(msg) => info!("{msg}"),
+            Err(e) => error!("Staging deploy failed: {e}"),
+        }
+    } else {
+        match deploy::deploy(&db, &ctx, dry_run).await {
             Ok(msg) => info!("{msg}"),
             Err(e) => error!("Deploy failed: {e}"),
-        },
-        Err(e) => error!("{e}"),
+        }
     }
 }
 
 async fn exec_rollback(root: Option<PathBuf>, raw: String) {
-    let Some(root) = root else {
-        error!("No project selected");
-        return;
-    };
     let id = raw.split_whitespace().next().unwrap_or("");
     if id.is_empty() {
         error!("No deployment ID provided");
         return;
     }
-
-    match ProjectContext::load(&root) {
-        Ok(ctx) => match deploy::rollback(&ctx, id).await {
-            Ok(msg) => info!("{msg}"),
-            Err(e) => error!("Rollback failed: {e}"),
-        },
-        Err(e) => error!("{e}"),
-    }
-}
-
-async fn exec_clean(root: Option<PathBuf>, _raw: String) {
     let Some(root) = root else {
         error!("No project selected");
         return;
     };
-    match ProjectContext::load(&root) {
-        Ok(ctx) => match ctx.clean() {
-            Ok(()) => info!("Cleaned build artifacts"),
-            Err(e) => error!("Clean failed: {e}"),
-        },
-        Err(e) => error!("{e}"),
+    let Ok(ctx) = ProjectContext::load(&root) else {
+        error!("Failed to load project");
+        return;
+    };
+    match deploy::rollback(&ctx, id).await {
+        Ok(msg) => info!("{msg}"),
+        Err(e) => error!("Rollback failed: {e}"),
     }
 }

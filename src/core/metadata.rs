@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Podcast {
     pub title: String,
@@ -23,24 +22,6 @@ pub struct Podcast {
     pub citation: Option<String>,
 }
 
-impl Default for Podcast {
-    fn default() -> Self {
-        Self {
-            title: String::new(),
-            file: String::new(),
-            source_url: None,
-            category: None,
-            thumbnail: None,
-            audio: None,
-            citation: None,
-        }
-    }
-}
-
-fn get_uuid() -> String {
-    Uuid::new_v4().to_string()
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TimelineEntry {
@@ -49,30 +30,28 @@ pub struct TimelineEntry {
     pub title: String,
     pub summary: Option<String>,
     pub url: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 impl Default for TimelineEntry {
     fn default() -> Self {
         Self {
-            id: get_uuid(),
+            id: uuid::Uuid::new_v4().to_string(),
             date: None,
             title: String::new(),
             summary: None,
             url: None,
+            link: None,
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Metadata {
     pub podcasts: Vec<Podcast>,
-}
-
-impl Default for Metadata {
-    fn default() -> Self {
-        Self { podcasts: vec![] }
-    }
 }
 
 impl Metadata {
@@ -85,6 +64,9 @@ impl Metadata {
             }
             if let Some(audio) = &p.audio {
                 files.push(audio.clone());
+            }
+            if let Some(thumb) = &p.thumbnail {
+                files.push(thumb.clone());
             }
         }
         files
@@ -122,17 +104,17 @@ podcasts:
                 file: "content/p.md".into(),
                 source_url: None,
                 category: None,
-                thumbnail: None,
+                thumbnail: Some("assets/image/p.jpg".into()),
                 audio: Some("assets/audio/p.mp3".into()),
                 citation: Some("content/p.bib".into()),
-                ..Default::default()
             }],
         };
 
         let files = meta.referenced_files();
-        assert_eq!(files.len(), 3);
+        assert_eq!(files.len(), 4);
         assert!(files.contains(&"content/p.md".to_string()));
         assert!(files.contains(&"content/p.bib".to_string()));
         assert!(files.contains(&"assets/audio/p.mp3".to_string()));
+        assert!(files.contains(&"assets/image/p.jpg".to_string()));
     }
 }

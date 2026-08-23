@@ -1,18 +1,17 @@
-# cite-cli
-
-CLI tool for scaffolding, validating, building, and deploying podcast content to Supabase.
-
 ## Installation
 
 ### Quick install
 
 (MacOS/Linux only)
+
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.2/cite-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.3/cite-cli-installer.sh | sh
 ```
+
 (Windows only)
+
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.2/cite-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.3/cite-cli-installer.ps1 | iex"
 ```
 
 ### From source
@@ -24,56 +23,89 @@ cargo build --release
 ./target/release/cite-cli --help
 ```
 
-## Usage
+## Quick Start
 
 ```bash
 cite-cli init my-project
 # edit metadata.yml and add content files
 cite-cli doctor --path my-project
 cite-cli build --path my-project
-cite-cli status --path my-project
+cite-cli login
 cite-cli deploy --path my-project
 ```
 
-> TUI: Running `cite-cli` will open an interactive terminal UI for running the commands.
-> NOTE: The editing of content files should still be done on your IDE.
+## Interactive Terminal UI
 
-## Tests
+Run `cite-cli` with no arguments to enter the TUI:
 
-```bash
-cargo test
-```
+| Key                 | Action                        |
+| ------------------- | ----------------------------- |
+| `Ctrl+P`            | Toggle command palette        |
+| `Tab` / `Shift+Tab` | Cycle focus between panels    |
+| `↑` / `↓`           | Navigate lists                |
+| `Enter`             | Execute command / select file |
+| `Ctrl+r`            | Refresh project list          |
+| `←` / `→`           | Navigate commands             |
+| `Ctrl+q`            | Quit                          |
+
+> When a command with arguments is selected, type args in the Details panel then press `Enter` to execute.
 
 ## Commands
 
-| Command | Description |
-|---|---|---|
-| `init <name>` | Scaffold a new project |
-| `doctor` | Validate structure, metadata, file existence, asset formats, and config |
-| `lint` | Word count checks |
-| `build` | Incremental build -> `build/content.json` |
-| `deploy` | Deploy to Supabase (full JSON to storage + table subset) |
-| `status` | Project health overview |
-| `clean` | Remove build artifacts and cache |
-| `rollback <id>` | Undo a deployment by ID |
-| `login` | Authenticate with Supabase for user-scoped deploys |
-| `upgrade` | Self-update to the latest GitHub release |
-| `uninstall` | Remove cite-cli binary and clean shell config |
+| Command                    | Description                                                                                 |
+| -------------------------- | ------------------------------------------------------------------------------------------- |
+| `init <name>`              | Create project structure                                                                    |
+| `doctor`                   | Validate project, metadata, files, assets, config, content quality, and media; show project health and local analytics |
+| `build`                    | Compile project → `build/content.json` (incremental)                                        |
+| `deploy`                   | Upload bundle to Supabase with verification                                                 |
+| `deploy --staging`         | Deploy to local cite.db instead of Supabase                                                 |
+| `clean`                    | Remove build artifacts and cache                                                            |
+| `rollback <deployment-id>` | Roll back to a previous deployment                                                          |
+| `login`                    | Authenticate with Supabase credentials                                                      |
+| `upgrade`                  | Self-update CLI                                                                             |
+| `uninstall`                | Remove CLI                                                                                  |
 
-All commands accept `--path <dir>` to target a specific directory.
-Without `--path`, projects are auto-discovered in the current directory and subdirectories.
+> Global options (all commands): `--path <dir>`, `--json`, `--quiet`, `--verbose`, `--dry-run`.
+> Command-specific: `doctor --json`, `build --force`, `deploy --staging`, `login --email --password`, `rollback <id>`, `uninstall --force`.
 
 ## Project Structure
 
 ```
 my-project/
-├── cite.toml           # Project manifest
-├── metadata.yml        # Podcast content metadata
-├── content/            # Markdown & BibTeX content files
-│   ├── article1.md     
-│   └── article1.bib
+├── cite.toml           # Project manifest (artist_id UUID)
+├── metadata.yml        # Podcast metadata
+├── content/            # Markdown & BibTeX files
 ├── assets/
-│   ├── audio/          # Podcast audio files
-│   └── image/          # Thumbnails and cover art
-└── build/              # Auto-Generated build output (gitignored)
+│   ├── audio/          # Podcast audio (optional)
+│   └── image/          # Thumbnails (optional)
+└── build/              # Generated output (gitignored)
+```
+
+## Metadata Model
+
+```yaml
+podcasts:
+  - title: "My Podcast"
+    file: content/my-article.md
+    source_url: "https://example.com"
+    category: "artificial intelligence"
+    audio: assets/audio/episode.mp3 # optional
+    thumbnail: assets/image/thumb.jpg # optional
+    citation: content/my-article.bib # optional
+```
+
+## Local Analytics
+
+cite-cli maintains a local database at `~/.cite/cite.db` for:
+
+- Compiler cache (file hashes, UUID mappings)
+- Build and deployment history
+- Project and podcast statistics (word count, reading time, audio duration)
+- Asset metadata and usage tracking
+- Offline analytics — no network required
+
+## Tests
+
+```bash
+cargo test
 ```

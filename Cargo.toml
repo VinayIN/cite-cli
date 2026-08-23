@@ -1,12 +1,7 @@
 [package]
 name = "cite-cli"
-authors = ["Binay Pradhan"]
-version = "0.1.0-alpha.2"
+version = "0.1.1"
 edition = "2024"
-readme = "README.md"
-
-license-file = "LICENSE"
-repository = "https://github.com/VinayIN/cite-cli"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -15,7 +10,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 toml = "1.0"
-tokio = { version = "1.44", features = ["full"] }
+tokio = { version = "1.44", features = ["rt", "rt-multi-thread", "macros", "fs", "io-util", "time", "sync"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 sha2 = "0.10"
 percent-encoding = "2.3"
@@ -25,16 +20,11 @@ thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ratatui = { version = "0.30.2", features = ["crossterm"] }
+libsql = { version = "0.10.0-pre.4", features = ["libsql-sys"] }
+symphonia = { version = "0.6", default-features = false, features = ["mp3", "wav", "flac", "vorbis", "isomp4", "aac", "alac", "pcm"] }
+imagesize = "0.15"
 
 [dev-dependencies]
 tempfile = "3.19"
 httpmock = "0.7"
 regex = "1.13.0"
-
-[[bin]]
-name = "cite-cli"
-path = "src/main.rs"
-
-[profile.dist]
-inherits = "release"
-lto = "thin"

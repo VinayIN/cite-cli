@@ -1,19 +1,31 @@
-use regex::Regex;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 struct ProjectHarness {
     _dir: tempfile::TempDir,
     project: PathBuf,
+    _db_dir: tempfile::TempDir,
+    db_path: PathBuf,
 }
 
 impl ProjectHarness {
     fn new(name: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("cite.db");
         let project = dir.path().join(name);
-        Self::ok(&["init", "--path", dir.path().to_str().unwrap(), name]);
-        Self { _dir: dir, project }
+
+        Self::cmd_ok(
+            &["init", "--path", dir.path().to_str().unwrap(), name],
+            &db_path,
+        );
+        Self {
+            _dir: dir,
+            project,
+            _db_dir: db_dir,
+            db_path,
+        }
     }
 
     fn binary() -> PathBuf {
@@ -32,9 +44,10 @@ impl ProjectHarness {
         p
     }
 
-    fn output(args: &[&str]) -> (String, String, bool) {
+    fn cmd(args: &[&str], db_path: &Path) -> (String, String, bool) {
         let output = Command::new(Self::binary())
             .args(args)
+            .env("CITE_DB_PATH", db_path.to_str().unwrap())
             .output()
             .expect("Failed to run cite-cli");
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -42,15 +55,15 @@ impl ProjectHarness {
         (stdout, stderr, output.status.success())
     }
 
-    fn ok(args: &[&str]) {
-        let (_, stderr, ok) = Self::output(args);
+    fn cmd_ok(args: &[&str], db_path: &Path) {
+        let (_, stderr, ok) = Self::cmd(args, db_path);
         assert!(ok, "cite-cli {} failed: {stderr}", args.join(" "));
     }
 
     fn run(&self, args: &[&str]) -> (String, String, bool) {
         let mut full = args.to_vec();
         full.extend_from_slice(&["--path", self.project.to_str().unwrap()]);
-        Self::output(&full)
+        Self::cmd(&full, &self.db_path)
     }
 
     fn run_ok(&self, args: &[&str]) -> String {
@@ -95,12 +108,15 @@ fn init_creates_project_structure() {
 #[test]
 fn init_is_idempotent_on_existing_project() {
     let h = ProjectHarness::new("existing");
-    let (_, stderr, ok) = ProjectHarness::output(&[
-        "init",
-        "--path",
-        h.project.parent().unwrap().to_str().unwrap(),
-        "existing",
-    ]);
+    let (_, stderr, ok) = ProjectHarness::cmd(
+        &[
+            "init",
+            "--path",
+            h.project.parent().unwrap().to_str().unwrap(),
+            "existing",
+        ],
+        &h.db_path,
+    );
     assert!(ok);
     assert!(stderr.contains("ready"));
     assert!(stderr.contains("Skipped"));
@@ -138,10 +154,10 @@ fn doctor_catches_missing_metadata() {
     assert!(stderr.contains("not found"));
 }
 
-// ── lint ────────────────────────────────────────────────────────
+// ── doctor (includes lint checks) ───────────────────────────────
 
 #[test]
-fn lint_warns_on_short_content() {
+fn doctor_warns_on_short_content() {
     let h = ProjectHarness::new("short-content");
     h.write_content("content/a.md", "Hi");
     h.write_metadata(
@@ -151,9 +167,9 @@ podcasts:
     file: content/a.md
 "#,
     );
-    let (_, stderr, ok) = h.run(&["lint"]);
+    let (_, stderr, ok) = h.run(&["doctor"]);
     assert!(ok);
-    assert!(stderr.contains("very short"));
+    assert!(stderr.contains("low word count") || stderr.contains("very short"));
 }
 
 // ── build ───────────────────────────────────────────────────────
@@ -171,10 +187,9 @@ podcasts:
 "#,
     );
 
-    // Set artist_id in cite.toml
-    let mut toml = fs::read_to_string(h.project.join("cite.toml")).unwrap();
-    let re = Regex::new(r#"(?m)^(artist_id\s*=\s*)"[^"]*""#).unwrap();
-    toml = re.replace(&toml, r#"$1"alice_uuid""#).to_string();
+    let re = regex::Regex::new(r#"(?m)^(artist_id\s*=\s*)"[^"]*""#).unwrap();
+    let toml = fs::read_to_string(h.project.join("cite.toml")).unwrap();
+    let toml = re.replace(&toml, r#"$1"alice_uuid""#).to_string();
     fs::write(h.project.join("cite.toml"), toml).unwrap();
     h.run_ok(&["build"]);
 
@@ -210,6 +225,8 @@ fn build_generates_timelines_from_bib_citations() {
   year = {2024},
   month = jan,
   abstract = {Extended results.},
+  url = {https://example.com/follow-up},
+  link = {https://example.com/news/related-story},
 }
 "#,
     );
@@ -245,6 +262,8 @@ podcasts:
             .contains("Breakthrough")
     );
     assert_eq!(entries[1]["date"], "2024-01");
+    assert_eq!(entries[1]["url"], "https://example.com/follow-up");
+    assert_eq!(entries[1]["link"], "https://example.com/news/related-story");
 }
 
 #[test]
@@ -268,7 +287,6 @@ podcasts:
     h.run_ok(&["build", "--force"]);
 
     let second = h.read_bundle();
-    // Compare everything except the auto-generated UUID (which changes each run)
     let first_content = &first["podcasts"][0]["content"];
     let second_content = &second["podcasts"][0]["content"];
     assert_eq!(
@@ -295,7 +313,6 @@ podcasts:
 
     let bundle = h.read_bundle();
     let content = bundle["podcasts"][0]["content"].as_str().unwrap();
-    // Wiki links are not resolved — they pass through as-is
     assert!(
         content.contains("[[other-page]]"),
         "wiki-link should remain as-is, got: {content}"
@@ -337,7 +354,7 @@ podcasts:
 // ── status ──────────────────────────────────────────────────────
 
 #[test]
-fn status_shows_project_info() {
+fn doctor_shows_project_info_with_status() {
     let h = ProjectHarness::new("status-test");
     h.write_content("content/a.md", "# Content");
     h.write_metadata(
@@ -348,24 +365,28 @@ podcasts:
 "#,
     );
 
-    let stderr = h.run_ok(&["status"]);
+    let stderr = h.run_ok(&["doctor"]);
     assert!(stderr.contains("status-test"));
     assert!(stderr.contains("Artist ID"));
 
     h.run_ok(&["build"]);
 
-    let stderr = h.run_ok(&["status"]);
-    assert!(stderr.contains("exists"));
+    let stderr = h.run_ok(&["doctor"]);
+    assert!(stderr.contains("Podcasts: 1"));
 }
 
 // ── doctor ──────────────────────────────────────────────────────
 
 #[test]
 fn doctor_detects_missing_project() {
-    let (_, stderr, ok) =
-        ProjectHarness::output(&["doctor", "--path", "/tmp/nonexistent-project-test-12345"]);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("cite.db");
+    let (_, stderr, ok) = ProjectHarness::cmd(
+        &["doctor", "--path", "/tmp/nonexistent-project-test-12345"],
+        &db_path,
+    );
     assert!(ok);
-    assert!(stderr.contains("cite.toml not found"));
+    assert!(stderr.contains("cite.toml: missing"));
 }
 
 #[test]
@@ -394,10 +415,6 @@ podcasts:
 
     h.run_ok(&["clean"]);
     assert!(!h.project.join("build").exists(), "build/ removed");
-    assert!(
-        !h.project.join(".cite-cache.json").exists(),
-        "cache removed"
-    );
 
     h.run_ok(&["clean"]);
 }
@@ -409,7 +426,12 @@ fn deploy_fails_without_backend() {
     let h = ProjectHarness::new("no-backend");
     let (_, stderr, ok) = h.run(&["deploy"]);
     assert!(!ok);
-    assert!(stderr.contains("No [backend]") || stderr.contains("No build artifact"));
+    assert!(
+        stderr.contains("No [backend]")
+            || stderr.contains("No build artifact")
+            || stderr.contains("No credentials found")
+            || stderr.contains("credentials")
+    );
 }
 
 #[test]
@@ -431,7 +453,11 @@ fn rollback_fails_without_backend() {
     let h = ProjectHarness::new("no-backend-rb");
     let (_, stderr, ok) = h.run(&["rollback", "some-id"]);
     assert!(!ok);
-    assert!(stderr.contains("No [backend]"));
+    assert!(
+        stderr.contains("No [backend]")
+            || stderr.contains("credentials")
+            || stderr.contains("No credentials")
+    );
 }
 
 // ── e2e ─────────────────────────────────────────────────────────
@@ -455,12 +481,7 @@ podcasts:
     );
 
     h.run_ok(&["doctor"]);
-    h.run_ok(&["lint"]);
     h.run_ok(&["build"]);
-
-    let stderr = h.run_ok(&["status"]);
-    assert!(stderr.contains("Artist ID"));
-    assert!(stderr.contains("Podcasts: 2"));
     let bundle = h.read_bundle();
     assert_eq!(bundle["project"], "e2e");
     assert_eq!(bundle["podcasts"].as_array().unwrap().len(), 2);
@@ -485,7 +506,9 @@ podcasts:
 
 #[test]
 fn help_prints_usage() {
-    let (stdout, _, ok) = ProjectHarness::output(&["--help"]);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("cite.db");
+    let (stdout, _, ok) = ProjectHarness::cmd(&["--help"], &db_path);
     assert!(ok);
     assert!(stdout.contains("cite-cli"));
     assert!(stdout.contains("rollback"));
@@ -496,4 +519,21 @@ fn help_prints_usage() {
 fn verbose_flag_works() {
     let h = ProjectHarness::new("verbose-test");
     h.run_ok(&["doctor", "--verbose"]);
+}
+
+#[test]
+fn json_flag_produces_valid_json() {
+    let h = ProjectHarness::new("json-test");
+    h.write_content("content/a.md", "# JSON Test");
+    h.write_metadata(
+        r#"
+podcasts:
+  - title: "JSON Article"
+    file: content/a.md
+"#,
+    );
+    let (stdout, _, ok) = h.run(&["doctor", "--json"]);
+    assert!(ok);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(parsed.is_array());
 }
