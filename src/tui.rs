@@ -1086,7 +1086,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
     );
 
     let [left_area, right_area] =
-        Layout::horizontal([Constraint::Fill(1), Constraint::Length(10)]).areas(area);
+        Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(area);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(left_text, style))),
         left_area,

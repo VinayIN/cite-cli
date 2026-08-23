@@ -6,7 +6,7 @@ use tracing::{info, instrument, warn};
 use crate::core::CiteError;
 
 #[instrument]
-pub fn uninstall(force: bool) -> Result<(), CiteError> {
+pub fn uninstall() -> Result<(), CiteError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| CiteError::Config(format!("Cannot determine executable path: {e}")))?;
 
@@ -16,19 +16,17 @@ pub fn uninstall(force: bool) -> Result<(), CiteError> {
 
     info!("cite-cli installed at: {}", current_exe.display());
 
-    if !force {
-        warn!("This will delete the binary. Shell config files might NOT be modified");
-        print!("Are you sure? [y/N] ");
-        let _ = std::io::stdout().flush();
+    warn!("This will delete the binary. Shell config files might NOT be modified");
+    print!("Are you sure? [y/N] ");
+    let _ = std::io::stdout().flush();
 
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        match input.trim().to_lowercase().as_str() {
-            "y" | "yes" => {}
-            _ => {
-                warn!("Uninstall cancelled");
-                return Ok(());
-            }
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    match input.trim().to_lowercase().as_str() {
+        "y" | "yes" => {}
+        _ => {
+            warn!("Uninstall cancelled");
+            return Ok(());
         }
     }
 

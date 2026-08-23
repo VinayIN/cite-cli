@@ -1,6 +1,9 @@
 # changelog
 
 ## Unreleased
+  - 
+
+## 0.1.0-alpha.3
   - Timeline deploy aligned with backend `timeline_news` schema
   - Added `link` BibTeX field to connect timeline events to other news items
   - Archived projects restore from local database snapshot
