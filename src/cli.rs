@@ -64,10 +64,7 @@ pub enum CliCommand {
         id: String,
     },
     Upgrade,
-    Uninstall {
-        #[arg(short, long)]
-        force: bool,
-    },
+    Uninstall,
 }
 
 #[instrument]
@@ -336,7 +333,7 @@ impl CliCommand {
                 println!("{}", "Upgrade complete".green());
                 Ok(())
             }
-            CliCommand::Uninstall { force } => uninstall::uninstall(force),
+            CliCommand::Uninstall => uninstall::uninstall(),
         }
     }
 }

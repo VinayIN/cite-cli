@@ -1,17 +1,18 @@
 # changelog
 
 ## Unreleased
-  - Timeline deploy aligned with backend `timeline_news` schema
-  - Added `link` BibTeX field to connect timeline events to other news items
-  - Archived projects restore from local database snapshot
-  - TUI: filterable command palette, Ctrl+C to cancel, safer argument input
-  - Added interactive TUI with realtime project refresh, log panel, and command execution
-  - Using local database to analytics
-  - Added audio metadata extraction (symphonia) and image dimension detection (imagesize)
-  - Added `--json` flag for machine-parseable output across all commands
-  - Added credential management module for Supabase authentication
-  - Fixed thread blocking in TUI by switching to polling with `tokio::spawn`
-  
+- `timeline` metadata field: a single ordered list mixing one BibTeX citation file (string path) and existing news item ids (integers)
+- Standalone `citation:` field removed - citations are declared inside `timeline`
+- Fixed multi-podcast deploys failing when a category had to be created concurrently (categories are re-fetched after insert conflicts)
+- Archived projects restore from local database snapshot
+- TUI: filterable command palette, Ctrl+C to cancel, safer argument input
+- Added interactive TUI with realtime project refresh, log panel, and command execution
+- Local database at `~/.cite/cite.db` used for offline analytics
+- Added audio metadata extraction (symphonia) and image dimension detection (imagesize)
+- Added `--json` flag for machine-parseable output across all commands
+- Added credential management module for Supabase authentication
+- Fixed thread blocking in TUI by switching to polling with `tokio::spawn`
+
 ## 0.1.0-alpha.2
  - TUI added to run all the commands interactively
  - Results from commands are now send in string formats (easy for AI Agents to parse)

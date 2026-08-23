@@ -235,7 +235,8 @@ fn build_generates_timelines_from_bib_citations() {
 podcasts:
   - title: "Release 1"
     file: content/release.md
-    citation: content/papers.bib
+    timeline:
+      - content/papers.bib
 "#,
     );
 
