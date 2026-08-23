@@ -30,6 +30,9 @@ pub struct TimelineEntry {
     pub title: String,
     pub summary: Option<String>,
     pub url: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 impl Default for TimelineEntry {
@@ -40,6 +43,7 @@ impl Default for TimelineEntry {
             title: String::new(),
             summary: None,
             url: None,
+            link: None,
         }
     }
 }

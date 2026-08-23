@@ -1,6 +1,10 @@
 # changelog
 
 ## Unreleased
+  - Timeline deploy aligned with backend `timeline_news` schema
+  - Added `link` BibTeX field to connect timeline events to other news items
+  - Archived projects restore from local database snapshot
+  - TUI: filterable command palette, Ctrl+C to cancel, safer argument input
   - Added interactive TUI with realtime project refresh, log panel, and command execution
   - Using local database to analytics
   - Added audio metadata extraction (symphonia) and image dimension detection (imagesize)

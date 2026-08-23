@@ -46,6 +46,7 @@ pub struct StoredTimeline {
     pub title: String,
     pub url: Option<String>,
     pub entry_type: Option<String>,
+    pub link: Option<String>,
 }
 
 /// A deployment record from the DB
@@ -89,6 +90,42 @@ pub struct AllStats {
     pub total_timelines: i64,
     pub total_words: i64,
     pub total_builds: i64,
+}
+
+/// A podcast row with everything needed to restore project files
+#[derive(Debug, Clone)]
+pub struct RestoredPodcast {
+    pub id: String,
+    pub title: String,
+    pub file: String,
+    pub source_url: Option<String>,
+    pub category: Option<String>,
+    pub thumbnail: Option<String>,
+    pub audio: Option<String>,
+    pub citation_file: Option<String>,
+    pub content: Option<String>,
+}
+
+/// A timeline row with its owning timeline group
+#[derive(Debug, Clone)]
+pub struct RestoredTimeline {
+    pub podcast_id: String,
+    pub date: Option<String>,
+    pub title: String,
+    pub summary: Option<String>,
+    pub url: Option<String>,
+    pub link: Option<String>,
+}
+
+/// Project-level data for restoring an archived project
+#[derive(Debug, Clone)]
+pub struct RestoredProject {
+    pub name: String,
+    pub language: String,
+    pub artist_id: String,
+    pub metadata_file: String,
+    pub podcasts: Vec<RestoredPodcast>,
+    pub timelines: Vec<RestoredTimeline>,
 }
 
 #[derive(Debug, Clone)]
@@ -338,7 +375,11 @@ incremental = true
         assert!(ctx.build_dir().exists());
         let db_path = dir.path().join("test.db");
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let db = rt.block_on(async { crate::core::db::DbManager::open_path(&db_path).await.unwrap() });
+        let db = rt.block_on(async {
+            crate::core::db::DbManager::open_path(&db_path)
+                .await
+                .unwrap()
+        });
         rt.block_on(ctx.clean(&db)).unwrap();
         assert!(!ctx.build_dir().exists());
     }

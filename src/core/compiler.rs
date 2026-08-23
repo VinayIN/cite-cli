@@ -81,7 +81,11 @@ impl CompileOutcome {
     }
 }
 
-pub async fn compile(db: &DbManager, ctx: &ProjectContext, force: bool) -> Result<CompileOutcome, CiteError> {
+pub async fn compile(
+    db: &DbManager,
+    ctx: &ProjectContext,
+    force: bool,
+) -> Result<CompileOutcome, CiteError> {
     let start = Instant::now();
     let project_id = ctx.project_id();
     let content_files = ctx.content_files();
@@ -128,17 +132,15 @@ pub async fn compile(db: &DbManager, ctx: &ProjectContext, force: bool) -> Resul
     let _ = db.save_cache(&project_id, &current_hashes).await;
     let _ = db.sync_project(ctx).await;
     let _ = db
-        .record_build(
-            &crate::core::project::BuildRecord {
-                project_id: project_id.clone(),
-                compiler_version: cv,
-                podcast_count: bundle.podcasts.len() as i64,
-                timeline_count,
-                total_words,
-                duration_ms: elapsed,
-                was_incremental,
-            },
-        )
+        .record_build(&crate::core::project::BuildRecord {
+            project_id: project_id.clone(),
+            compiler_version: cv,
+            podcast_count: bundle.podcasts.len() as i64,
+            timeline_count,
+            total_words,
+            duration_ms: elapsed,
+            was_incremental,
+        })
         .await;
 
     let stats = CompileStats {
@@ -314,6 +316,7 @@ pub fn parse_bibtex(content: &str) -> Vec<TimelineEntry> {
         let url = extract_bib_field(body, "url")
             .or_else(|| extract_bib_field(body, "doi"))
             .unwrap_or_default();
+        let link = extract_bib_field(body, "link").filter(|l| !l.trim().is_empty());
         let date = format_bib_date(&year, &month);
         let entry_title = format_title(&title, &author);
         let id = uuid::Uuid::new_v4().to_string();
@@ -324,6 +327,7 @@ pub fn parse_bibtex(content: &str) -> Vec<TimelineEntry> {
             title: entry_title,
             summary: Some(summary),
             url: Some(url),
+            link,
         });
     }
 

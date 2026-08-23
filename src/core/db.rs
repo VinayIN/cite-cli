@@ -27,6 +27,11 @@ fn get_opt_string(row: &libsql::Row, idx: i32) -> String {
     }
 }
 
+fn opt_string(row: &libsql::Row, idx: i32) -> Option<String> {
+    let s = get_opt_string(row, idx);
+    if s.is_empty() { None } else { Some(s) }
+}
+
 impl DbManager {
     pub async fn open() -> Result<Self, CiteError> {
         let path = global_db_path();
@@ -120,6 +125,17 @@ impl DbManager {
             if !trimmed.is_empty() {
                 self.conn.execute(trimmed, ()).await?;
             }
+        }
+
+        if self
+            .conn
+            .query("SELECT link FROM timeline_entries LIMIT 1", ())
+            .await
+            .is_err()
+        {
+            self.conn
+                .execute("ALTER TABLE timeline_entries ADD COLUMN link TEXT", ())
+                .await?;
         }
 
         let mut rows = self
@@ -245,11 +261,12 @@ impl DbManager {
                         let entry_title = entry.title.clone();
                         let entry_summary = entry.summary.clone();
                         let entry_url = entry.url.clone();
+                        let entry_link = entry.link.clone();
                         self.conn
                                 .execute(
                                     "INSERT INTO timeline_entries
-                                        (id, project_id, podcast_id, date, title, summary, url, entry_type)
-                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                                        (id, project_id, podcast_id, date, title, summary, url, link, entry_type)
+                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                                     params![
                                         entry_id,
                                         project_id.clone(),
@@ -258,6 +275,7 @@ impl DbManager {
                                         entry_title,
                                         entry_summary,
                                         entry_url,
+                                        entry_link,
                                         none_str,
                                     ],
                                 )
@@ -376,7 +394,6 @@ impl DbManager {
         Ok(())
     }
 
-
     pub async fn record_deployment(
         &self,
         report: &super::project::DeployReport,
@@ -404,7 +421,6 @@ impl DbManager {
             .await?;
         Ok(())
     }
-
 
     pub async fn get_podcasts_with_content(
         &self,
@@ -440,7 +456,7 @@ impl DbManager {
         let mut rows = self
             .conn
             .query(
-                "SELECT date, title, url, entry_type
+                "SELECT date, title, url, entry_type, link
                  FROM timeline_entries WHERE project_id = ?1
                  ORDER BY date DESC NULLS LAST",
                 params![project_id],
@@ -452,14 +468,94 @@ impl DbManager {
             let d = get_opt_string(&row, 0);
             let u = get_opt_string(&row, 2);
             let t = get_opt_string(&row, 3);
+            let l = get_opt_string(&row, 4);
             entries.push(super::project::StoredTimeline {
                 date: if d.is_empty() { None } else { Some(d) },
                 title: row.get(1)?,
                 url: if u.is_empty() { None } else { Some(u) },
                 entry_type: if t.is_empty() { None } else { Some(t) },
+                link: if l.is_empty() { None } else { Some(l) },
             });
         }
         Ok(entries)
+    }
+
+    pub async fn get_restore_snapshot(
+        &self,
+        project_id: &str,
+    ) -> Result<super::project::RestoredProject, CiteError> {
+        use super::project::{RestoredPodcast, RestoredProject, RestoredTimeline};
+
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT name, language, artist_id, metadata_file FROM projects WHERE id = ?1",
+                params![project_id],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Err(CiteError::Config(format!(
+                "No local record found for project '{project_id}'"
+            )));
+        };
+        let mut snapshot = RestoredProject {
+            name: row.get(0)?,
+            language: get_opt_string(&row, 1),
+            artist_id: get_opt_string(&row, 2),
+            metadata_file: get_opt_string(&row, 3),
+            podcasts: Vec::new(),
+            timelines: Vec::new(),
+        };
+        if snapshot.language.is_empty() {
+            snapshot.language = "en".into();
+        }
+        if snapshot.metadata_file.is_empty() {
+            snapshot.metadata_file = "metadata.yml".into();
+        }
+
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, title, file, source_url, category, thumbnail, audio, citation_file, content
+                 FROM podcasts WHERE project_id = ?1 ORDER BY file",
+                params![project_id],
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            snapshot.podcasts.push(RestoredPodcast {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                file: get_opt_string(&row, 2),
+                source_url: opt_string(&row, 3),
+                category: opt_string(&row, 4),
+                thumbnail: opt_string(&row, 5),
+                audio: opt_string(&row, 6),
+                citation_file: opt_string(&row, 7),
+                content: opt_string(&row, 8),
+            });
+        }
+
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT podcast_id, date, title, summary, url, link
+                 FROM timeline_entries WHERE project_id = ?1
+                 ORDER BY date ASC NULLS LAST",
+                params![project_id],
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            snapshot.timelines.push(RestoredTimeline {
+                podcast_id: row.get(0)?,
+                date: opt_string(&row, 1),
+                title: get_opt_string(&row, 2),
+                summary: opt_string(&row, 3),
+                url: opt_string(&row, 4),
+                link: opt_string(&row, 5),
+            });
+        }
+
+        Ok(snapshot)
     }
 
     pub async fn get_deployment_history(
@@ -767,5 +863,63 @@ mod tests {
 
         let builds = db.get_build_history("proj1").await.unwrap();
         assert_eq!(builds.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_restore_snapshot_and_link_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = DbManager::open_path(&db_path).await.unwrap();
+
+        db.conn
+            .execute(
+                "INSERT INTO projects (id, name, language, artist_id)
+                 VALUES ('proj1', 'Restore Me', 'en', 'artist-uuid')",
+                (),
+            )
+            .await
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO podcasts (id, project_id, title, file, source_url, content, word_count)
+                 VALUES ('pod1', 'proj1', 'Episode', 'content/ep.md', 'https://example.com', '# Episode', 2)",
+                (),
+            )
+            .await
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO timeline_entries (id, project_id, podcast_id, date, title, summary, url, link)
+                 VALUES ('t1', 'proj1', 'pod1', '2024-02', 'Event', 'Summary text', 'https://example.com/a', 'https://example.com/news/b')",
+                (),
+            )
+            .await
+            .unwrap();
+
+        let timelines = db.get_timelines("proj1").await.unwrap();
+        assert_eq!(
+            timelines[0].link.as_deref(),
+            Some("https://example.com/news/b")
+        );
+
+        let snap = db.get_restore_snapshot("proj1").await.unwrap();
+        assert_eq!(snap.name, "Restore Me");
+        assert_eq!(snap.language, "en");
+        assert_eq!(snap.artist_id, "artist-uuid");
+        assert_eq!(snap.podcasts.len(), 1);
+        assert_eq!(snap.podcasts[0].content.as_deref(), Some("# Episode"));
+        assert_eq!(
+            snap.podcasts[0].source_url.as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(snap.timelines.len(), 1);
+        assert_eq!(snap.timelines[0].title, "Event");
+        assert_eq!(snap.timelines[0].summary.as_deref(), Some("Summary text"));
+        assert_eq!(
+            snap.timelines[0].link.as_deref(),
+            Some("https://example.com/news/b")
+        );
+
+        assert!(db.get_restore_snapshot("missing").await.is_err());
     }
 }

@@ -13,6 +13,7 @@ use crate::core::compiler::{BundlePodcast, BundleTimeline};
 use crate::core::credentials;
 use crate::core::db::DbManager;
 use crate::core::manifest::BackendConfig;
+use crate::core::metadata::TimelineEntry;
 use crate::core::project::ProjectContext;
 
 const ASSETS_BUCKET: &str = "assets";
@@ -70,7 +71,10 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-fn build_context(ctx: &ProjectContext, backend: &BackendConfig) -> Result<DeployContext, CiteError> {
+fn build_context(
+    ctx: &ProjectContext,
+    backend: &BackendConfig,
+) -> Result<DeployContext, CiteError> {
     let session = load_session();
     Ok(DeployContext {
         client: reqwest::Client::new(),
@@ -100,7 +104,11 @@ async fn ensure_success(
     )))
 }
 
-pub async fn deploy(db: &DbManager, ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteError> {
+pub async fn deploy(
+    db: &DbManager,
+    ctx: &ProjectContext,
+    dry_run: bool,
+) -> Result<String, CiteError> {
     let backend = resolve_backend_config(ctx)?;
 
     let bundle_path = ctx.build_dir().join("content.json");
@@ -183,7 +191,14 @@ pub async fn deploy(db: &DbManager, ctx: &ProjectContext, dry_run: bool) -> Resu
         }
     }
 
-    upload_bytes(&dctx, ASSETS_BUCKET, &object_path, &bundle_json, "application/json").await?;
+    upload_bytes(
+        &dctx,
+        ASSETS_BUCKET,
+        &object_path,
+        &bundle_json,
+        "application/json",
+    )
+    .await?;
     info!("Uploaded bundle to {storage_path}");
 
     persist_deployment_record(ctx, &record).await?;
@@ -231,7 +246,11 @@ async fn record_partial(
         .await;
 }
 
-pub async fn deploy_staging(db: &DbManager, ctx: &ProjectContext, dry_run: bool) -> Result<String, CiteError> {
+pub async fn deploy_staging(
+    db: &DbManager,
+    ctx: &ProjectContext,
+    dry_run: bool,
+) -> Result<String, CiteError> {
     let bundle_path = ctx.build_dir().join("content.json");
     if !bundle_path.exists() {
         return Err(CiteError::Config(
@@ -292,7 +311,8 @@ async fn deploy_podcast(
 ) -> Result<DeployedPodcast, CiteError> {
     let title = &podcast.podcast.title;
     let content = podcast.content.as_deref();
-    let category_id = resolve_category_id(dctx, podcast.podcast.category.as_deref(), categories).await?;
+    let category_id =
+        resolve_category_id(dctx, podcast.podcast.category.as_deref(), categories).await?;
 
     let fallback_url = format!("cite://podcasts/{}", podcast.id);
     let url_id = ensure_url_id(
@@ -309,9 +329,13 @@ async fn deploy_podcast(
     let mut asset_paths = Vec::new();
 
     let thumb_stem = format!("{artist_id}/news_{news_id}");
-    if let Some(asset) =
-        upload_optional_asset(dctx, podcast.podcast.thumbnail.as_deref(), ASSETS_BUCKET, &thumb_stem)
-            .await?
+    if let Some(asset) = upload_optional_asset(
+        dctx,
+        podcast.podcast.thumbnail.as_deref(),
+        ASSETS_BUCKET,
+        &thumb_stem,
+    )
+    .await?
     {
         update_news_thumbnail(dctx, news_id, &asset.storage_path).await?;
         info!("Uploaded thumbnail: {}", asset.storage_path);
@@ -319,11 +343,18 @@ async fn deploy_podcast(
     }
 
     let audio_stem = format!("{artist_id}/podcast_{news_id}");
-    if let Some(audio) =
-        upload_optional_asset(dctx, podcast.podcast.audio.as_deref(), PODCASTS_BUCKET, &audio_stem)
-            .await?
+    if let Some(audio) = upload_optional_asset(
+        dctx,
+        podcast.podcast.audio.as_deref(),
+        PODCASTS_BUCKET,
+        &audio_stem,
+    )
+    .await?
     {
-        let duration_minutes = podcast.audio_meta.as_ref().map(|meta| meta.duration_secs / 60.0);
+        let duration_minutes = podcast
+            .audio_meta
+            .as_ref()
+            .map(|meta| meta.duration_secs / 60.0);
         insert_podcast_row(dctx, news_id, title, &audio.storage_path, duration_minutes).await?;
         info!("Created podcast: {title}");
         asset_paths.push(audio.storage_path);
@@ -345,44 +376,120 @@ async fn deploy_timelines(
 ) -> Result<Vec<i64>, CiteError> {
     let mut timeline_ids = Vec::new();
 
-    for group in groups {
-        for entry in &group.entries {
-            let title = &entry.title;
-            let date = entry.date.as_deref().unwrap_or("");
-            let summary = entry.summary.as_deref().unwrap_or("");
-            let description = format!("Date: {date}\nSummary: {summary}");
-
-            let url_id = if let Some(url) = entry.url.as_deref().filter(|u| !u.trim().is_empty()) {
-                Some(ensure_url_id(dctx, Some(url), url, None).await?)
-            } else {
-                None
-            };
-
-            let mut timeline_payload = build_map(&[
-                ("title", Value::String(title.to_string())),
-                ("description", Value::String(description)),
-                ("created_at", Value::String(now_rfc3339())),
-            ]);
-            if let Some(url_id) = url_id {
-                timeline_payload.insert("url_id".into(), Value::Number(url_id.into()));
-            }
-
-            let timeline_id = insert_row(dctx, "timeline", timeline_payload).await?;
-            insert_row(
-                dctx,
-                "timeline_news",
-                build_map(&[
-                    ("timeline_id", Value::Number(timeline_id.into())),
-                    ("news_id", Value::Number(news_id.into())),
-                ]),
-            )
-            .await?;
-            timeline_ids.push(timeline_id);
-            info!("Deployed timeline entry: {title}");
+    for entry in groups.iter().flat_map(|group| &group.entries) {
+        let sort_order = (timeline_ids.len() + 1) as i64;
+        if let Some(id) = deploy_timeline_entry(dctx, news_id, entry, sort_order).await? {
+            timeline_ids.push(id);
         }
     }
 
     Ok(timeline_ids)
+}
+
+async fn deploy_timeline_entry(
+    dctx: &DeployContext,
+    parent_news_id: i64,
+    entry: &TimelineEntry,
+    sort_order: i64,
+) -> Result<Option<i64>, CiteError> {
+    let link = entry
+        .link
+        .as_deref()
+        .map(str::trim)
+        .filter(|l| !l.is_empty());
+
+    if let Some(link) = link
+        && let Some(child_news_id) = lookup_news_by_url(dctx, link).await?
+    {
+        info!("Linked timeline event to news {child_news_id}");
+        return insert_row(
+            dctx,
+            "timeline_news",
+            build_map(&[
+                ("parent_news_id", Value::Number(parent_news_id.into())),
+                ("child_news_id", Value::Number(child_news_id.into())),
+                ("sort_order", Value::Number(sort_order.into())),
+            ]),
+        )
+        .await
+        .map(Some);
+    }
+
+    let title = entry.title.trim();
+    if title.is_empty() {
+        warn!("Skipping timeline entry without a title");
+        return Ok(None);
+    }
+
+    let mut payload = build_map(&[
+        ("parent_news_id", Value::Number(parent_news_id.into())),
+        ("title", Value::String(title.to_string())),
+        ("sort_order", Value::Number(sort_order.into())),
+    ]);
+
+    if let Some(summary) = entry
+        .summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        payload.insert("description".into(), Value::String(summary.to_string()));
+    }
+
+    let url = entry
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .or(link);
+    if let Some(url) = url {
+        let url_id = ensure_url_id(dctx, Some(url), url, None).await?;
+        payload.insert("url_id".into(), Value::Number(url_id.into()));
+    }
+
+    match entry.date.as_deref().and_then(event_date_rfc3339) {
+        Some(event_date) => {
+            payload.insert("event_date".into(), Value::String(event_date));
+        }
+        None => {
+            if let Some(date) = entry.date.as_deref() {
+                warn!("Unrecognized timeline date '{date}', deploying without event_date");
+            }
+        }
+    }
+
+    info!("Deployed timeline event: {title}");
+    insert_row(dctx, "timeline_news", payload).await.map(Some)
+}
+
+async fn lookup_news_by_url(dctx: &DeployContext, url: &str) -> Result<Option<i64>, CiteError> {
+    let Some(url_id) = lookup_row_id(dctx, "urls", "url", url).await? else {
+        warn!("No known source matches timeline link '{url}'; using inline event");
+        return Ok(None);
+    };
+    let news_id = lookup_row_id(dctx, "news", "url_id", &url_id.to_string()).await?;
+    if news_id.is_none() {
+        warn!("No published news matches timeline link '{url}'; using inline event");
+    }
+    Ok(news_id)
+}
+
+fn event_date_rfc3339(date: &str) -> Option<String> {
+    let s = date.trim();
+    let digits = s.as_bytes();
+    let year_only = s.len() == 4 && digits[..4].iter().all(|b| b.is_ascii_digit());
+    let year_month = s.len() == 7
+        && digits[4] == b'-'
+        && digits[..4].iter().all(|b| b.is_ascii_digit())
+        && digits[5..7].iter().all(|b| b.is_ascii_digit());
+
+    if year_only {
+        Some(format!("{s}-01-01T00:00:00Z"))
+    } else if year_month {
+        Some(format!("{s}-01T00:00:00Z"))
+    } else {
+        None
+    }
 }
 
 async fn persist_deployment_record(
@@ -427,10 +534,7 @@ async fn delete_storage_object(dctx: &DeployContext, storage_path: &str) -> Resu
     let (bucket, object_path) = storage_path
         .split_once('/')
         .unwrap_or((ASSETS_BUCKET, storage_path));
-    let url = format!(
-        "{}/storage/v1/object/{bucket}/{object_path}",
-        dctx.base_url
-    );
+    let url = format!("{}/storage/v1/object/{bucket}/{object_path}", dctx.base_url);
     let response = with_auth(dctx.client.delete(&url), &dctx.api_key, &dctx.bearer)
         .send()
         .await?;
@@ -462,8 +566,8 @@ pub async fn rollback(ctx: &ProjectContext, deployment_id: &str) -> Result<Strin
     warn!("Rolling back deployment: {deployment_id}");
 
     for timeline_id in &record.timeline_ids {
-        delete_row_by_id(&dctx, "timeline", *timeline_id).await?;
-        info!("Cleared timeline {timeline_id}");
+        delete_row_by_id(&dctx, "timeline_news", *timeline_id).await?;
+        info!("Cleared timeline event {timeline_id}");
     }
 
     for news_id in &record.news_ids {
@@ -869,7 +973,10 @@ async fn resolve_category_id(
         .filter(|value| !value.is_empty())
         .unwrap_or(DEFAULT_CATEGORY);
 
-    if let Some(category) = categories.iter().find(|c| c.name.eq_ignore_ascii_case(name)) {
+    if let Some(category) = categories
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case(name))
+    {
         return Ok(category.id);
     }
 
@@ -900,7 +1007,10 @@ async fn resolve_category_id(
     }
 }
 
-async fn ensure_domain_id(dctx: &DeployContext, domain_name: &str) -> Result<Option<i64>, CiteError> {
+async fn ensure_domain_id(
+    dctx: &DeployContext,
+    domain_name: &str,
+) -> Result<Option<i64>, CiteError> {
     if let Some(id) = lookup_row_id(dctx, "domains", "domain_name", domain_name).await? {
         return Ok(Some(id));
     }
@@ -1125,32 +1235,16 @@ async fn upload_bytes(
                 let status = r.status();
                 let body = r.text().await.unwrap_or_default();
                 last_err = Some(format!("HTTP {status} - {body}"));
-                warn!(
-                    "Upload attempt {}/3 failed: {}",
-                    attempt + 1,
-                    last_err.as_ref().unwrap()
-                );
-                if attempt < 2 {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        500 * (attempt as u64 + 1),
-                    ))
-                    .await;
-                }
             }
-            Err(e) => {
-                last_err = Some(e.to_string());
-                warn!(
-                    "Upload attempt {}/3 failed: {}",
-                    attempt + 1,
-                    last_err.as_ref().unwrap()
-                );
-                if attempt < 2 {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        500 * (attempt as u64 + 1),
-                    ))
-                    .await;
-                }
-            }
+            Err(e) => last_err = Some(e.to_string()),
+        }
+        warn!(
+            "Upload attempt {}/3 failed: {}",
+            attempt + 1,
+            last_err.as_ref().unwrap()
+        );
+        if attempt < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1))).await;
         }
     }
 
@@ -1245,6 +1339,21 @@ mod tests {
         assert_eq!(word_count("one two three"), 3);
         assert_eq!(word_count(""), 0);
     }
+
+    #[test]
+    fn test_event_date_rfc3339() {
+        assert_eq!(
+            event_date_rfc3339("2023").as_deref(),
+            Some("2023-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            event_date_rfc3339(" 2023-03 ").as_deref(),
+            Some("2023-03-01T00:00:00Z")
+        );
+        assert_eq!(event_date_rfc3339("march"), None);
+        assert_eq!(event_date_rfc3339("2023-0"), None);
+        assert_eq!(event_date_rfc3339(""), None);
+    }
 }
 
 #[cfg(test)]
@@ -1304,6 +1413,14 @@ podcasts:
   month = mar,
   abstract = {Important findings.},
 }
+
+@article{ref2024,
+  title = {Linked Story},
+  author = {Roe, J.},
+  year = {2024},
+  abstract = {Related coverage.},
+  link = {https://example.com/related}
+}
 "#,
         )
         .unwrap();
@@ -1352,12 +1469,30 @@ podcasts:
             w.method(POST).path("/rest/v1/podcasts");
             t.status(200).json_body(serde_json::json!([{ "id": 1 }]));
         });
-        let timeline = server.mock(|w, t| {
-            w.method(POST).path("/rest/v1/timeline");
-            t.status(200).json_body(serde_json::json!([{ "id": 1 }]));
+        let linked_url_get = server.mock(|w, t| {
+            w.method(GET)
+                .path("/rest/v1/urls")
+                .query_param("url", "eq.https://example.com/related");
+            t.status(200).json_body(serde_json::json!([{ "id": 9 }]));
         });
-        let timeline_news = server.mock(|w, t| {
-            w.method(POST).path("/rest/v1/timeline_news");
+        let news_by_url_get = server.mock(|w, t| {
+            w.method(GET)
+                .path("/rest/v1/news")
+                .query_param("url_id", "eq.9");
+            t.status(200).json_body(serde_json::json!([{ "id": 77 }]));
+        });
+        let timeline_linked = server.mock(|w, t| {
+            w.method(POST)
+                .path("/rest/v1/timeline_news")
+                .body_contains("child_news_id");
+            t.status(200).json_body(serde_json::json!([{ "id": 2 }]));
+        });
+        let timeline_inline = server.mock(|w, t| {
+            w.method(POST)
+                .path("/rest/v1/timeline_news")
+                .body_contains("title")
+                .body_contains("event_date")
+                .body_contains("sort_order");
             t.status(200).json_body(serde_json::json!([{ "id": 1 }]));
         });
         let storage_post = server.mock(|w, t| {
@@ -1374,7 +1509,7 @@ podcasts:
             t.status(200).json_body(serde_json::json!([]));
         });
         let del_timeline = server.mock(|w, t| {
-            w.method(DELETE).path("/rest/v1/timeline");
+            w.method(DELETE).path("/rest/v1/timeline_news");
             t.status(200).json_body(serde_json::json!([]));
         });
         let del_news = server.mock(|w, t| {
@@ -1391,16 +1526,40 @@ podcasts:
         });
 
         let (_dir, ctx, db) = setup(&base).await;
-        deploy(&db, &ctx, false).await.expect("deploy should succeed");
+        deploy(&db, &ctx, false)
+            .await
+            .expect("deploy should succeed");
 
         assert_eq!(news.hits(), 1, "one news row with artist_id");
         assert_eq!(news_patch.hits(), 1, "thumbnail patched after upload");
-        assert_eq!(categories_post.hits(), 1, "category created via best-effort insert");
-        assert_eq!(urls.hits(), 1, "one url row (news source; citation has no url)");
+        assert_eq!(
+            categories_post.hits(),
+            1,
+            "category created via best-effort insert"
+        );
+        assert_eq!(
+            urls.hits(),
+            1,
+            "one url row (news source; citation has no url)"
+        );
         assert_eq!(domains.hits(), 1, "domain created via best-effort insert");
-        assert_eq!(podcasts.hits(), 1, "podcast row with storage path + duration");
-        assert_eq!(timeline.hits(), 1, "timeline from citation");
-        assert_eq!(timeline_news.hits(), 1, "timeline linked to its podcast");
+        assert_eq!(
+            podcasts.hits(),
+            1,
+            "podcast row with storage path + duration"
+        );
+        assert_eq!(
+            timeline_inline.hits(),
+            1,
+            "inline timeline event from citation"
+        );
+        assert_eq!(
+            timeline_linked.hits(),
+            1,
+            "citation link resolved to its news item"
+        );
+        assert_eq!(linked_url_get.hits(), 1, "link resolved through urls table");
+        assert_eq!(news_by_url_get.hits(), 1, "child news looked up by url_id");
         assert!(storage_post.hits() >= 1, "bundle/asset uploads");
         assert!(artists_get.hits() >= 1, "artist existence checked");
         assert_eq!(
@@ -1424,7 +1583,7 @@ podcasts:
 
         rollback(&ctx, &id).await.expect("rollback should succeed");
 
-        assert_eq!(del_timeline.hits(), 1, "timeline deleted");
+        assert_eq!(del_timeline.hits(), 2, "timeline events deleted");
         assert_eq!(del_news.hits(), 1, "news deleted");
         assert!(storage_del.hits() >= 1, "storage object deleted");
         assert_eq!(

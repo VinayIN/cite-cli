@@ -225,6 +225,8 @@ fn build_generates_timelines_from_bib_citations() {
   year = {2024},
   month = jan,
   abstract = {Extended results.},
+  url = {https://example.com/follow-up},
+  link = {https://example.com/news/related-story},
 }
 "#,
     );
@@ -260,6 +262,8 @@ podcasts:
             .contains("Breakthrough")
     );
     assert_eq!(entries[1]["date"], "2024-01");
+    assert_eq!(entries[1]["url"], "https://example.com/follow-up");
+    assert_eq!(entries[1]["link"], "https://example.com/news/related-story");
 }
 
 #[test]

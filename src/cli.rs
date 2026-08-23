@@ -319,7 +319,9 @@ impl CliCommand {
             CliCommand::Login { email, password } => {
                 let backend = PathBuf::from(path).canonicalize().ok().and_then(|root| {
                     if root.join("cite.toml").exists() {
-                        project::ProjectContext::load(&root).ok().and_then(|ctx| ctx.manifest.backend)
+                        project::ProjectContext::load(&root)
+                            .ok()
+                            .and_then(|ctx| ctx.manifest.backend)
                     } else {
                         None
                     }
