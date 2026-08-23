@@ -6,13 +6,15 @@
   - Archived projects restore from local database snapshot
   - TUI: filterable command palette, Ctrl+C to cancel, safer argument input
   - Added interactive TUI with realtime project refresh, log panel, and command execution
-
-## 0.1.0-alpha.2
   - Using local database to analytics
   - Added audio metadata extraction (symphonia) and image dimension detection (imagesize)
   - Added `--json` flag for machine-parseable output across all commands
   - Added credential management module for Supabase authentication
   - Fixed thread blocking in TUI by switching to polling with `tokio::spawn`
+  
+## 0.1.0-alpha.2
+ - TUI added to run all the commands interactively
+ - Results from commands are now send in string formats (easy for AI Agents to parse)
 
 ## 0.1.0-alpha.1
 - scaffold changed to make it more modular
