@@ -53,8 +53,9 @@ cite-cli deploy --path my-project
 | `upgrade`                  | Self-update CLI                                                                                                        |
 | `uninstall`                | Remove CLI and local data                                                                                              |
 
-> Global options (all commands): `--path <dir>`, `--json`, `--quiet`, `--verbose`, `--dry-run`.
-> Command-specific flags: `build --force`, `deploy --staging`, `login --email <email> --password <password>`.
+> Global options (all commands): `--path <dir>`, `--json`, `--quiet`, `--verbose`, `--dry-run`
+> 
+> Command-specific flags: `build --force`, `deploy --staging`, `login --email <email> --password <password>`
 
 ## Interactive Terminal UI
 
