@@ -9,13 +9,13 @@ Create, validate, build, and deploy podcast content for aoux app.
 (MacOS/Linux only)
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.3/cite-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.4/cite-cli-installer.sh | sh
 ```
 
 (Windows only)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.3/cite-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/VinayIN/cite-cli/releases/download/v0.1.0-alpha.4/cite-cli-installer.ps1 | iex"
 ```
 
 ### From source
@@ -60,22 +60,22 @@ cite-cli deploy --path my-project
 
 Run `cite-cli` with no arguments to enter the TUI:
 
-| Key                      | Action                                                                 |
-| ------------------------ | ---------------------------------------------------------------------- |
-| `Cmd+P` / `Ctrl+Shift+P` | Toggle command palette                                                 |
-| `Tab` / `Shift+Tab`      | Cycle focus between panels                                             |
-| `↑` / `↓`                | Navigate lists, scroll logs and analytics                              |
-| `PgUp` / `PgDn`          | Fast-scroll analytics                                                  |
-| `←` / `→`                | Navigate commands                                                      |
+| Key                      | Action                                                                            |
+| ------------------------ | --------------------------------------------------------------------------------- |
+| `Cmd+P` / `Ctrl+Shift+P` | Toggle command palette                                                            |
+| `Tab` / `Shift+Tab`      | Cycle focus between panels                                                        |
+| `↑` / `↓`                | Navigate lists, scroll logs and analytics                                         |
+| `PgUp` / `PgDn`          | Fast-scroll analytics                                                             |
+| `←` / `→`                | Navigate commands                                                                 |
 | `Enter`                  | Execute command (confirms Y/N for deploy/rollback) / select project / expand item |
-| Type                     | Enter arguments for the selected command in Details panel              |
-| `Ctrl+r`                 | Refresh project list                                                   |
-| `Ctrl+e`                 | Open file editor picker (Projects panel)                               |
-| `Ctrl+l` / `Ctrl+a`      | Toggle local / archived projects (Projects panel)                      |
-| `Ctrl+p/t/b/d`           | Expand/collapse podcasts, timelines, builds, deploys (Analytics panel) |
-| `Ctrl+c`                 | Cancel a running command                                               |
-| `Esc`                    | Close palette / prompt, clear typed args, or quit if nothing to cancel |
-| `Ctrl+q`                 | Quit                                                                   |
+| Type                     | Enter arguments for the selected command in Details panel                         |
+| `Ctrl+r`                 | Refresh project list                                                              |
+| `Ctrl+e`                 | Open file editor picker (Projects panel)                                          |
+| `Ctrl+l` / `Ctrl+a`      | Toggle local / archived projects (Projects panel)                                 |
+| `Ctrl+p/t/b/d`           | Expand/collapse podcasts, timelines, builds, deploys (Analytics panel)            |
+| `Ctrl+c`                 | Cancel a running command                                                          |
+| `Esc`                    | Close palette / prompt, clear typed args, or quit if nothing to cancel            |
+| `Ctrl+q`                 | Quit                                                                              |
 
 ## Project Structure
 
@@ -103,9 +103,9 @@ podcasts:
     category: "artificial intelligence"
     audio: assets/audio/episode.mp3 # optional
     thumbnail: assets/image/thumb.jpg # optional
-    timeline:                        # optional; deployed in order as timeline_news rows
-      - content/my-article.bib       # BibTeX citation file -> inline events
-      - 26                           # existing news item id -> linked row
+    timeline: # optional; deployed in order as timeline_news rows
+      - content/my-article.bib # BibTeX citation file -> inline events
+      - 26 # existing news item id -> linked row
 ```
 
 ## Authentication
