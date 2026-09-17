@@ -67,14 +67,14 @@ Run `cite-cli` with no arguments to enter the TUI:
 | `↑` / `↓`                | Navigate lists, scroll logs and analytics                              |
 | `PgUp` / `PgDn`          | Fast-scroll analytics                                                  |
 | `←` / `→`                | Navigate commands                                                      |
-| `Enter`                  | Execute command / select project / expand item                         |
+| `Enter`                  | Execute command (confirms Y/N for deploy/rollback) / select project / expand item |
 | Type                     | Enter arguments for the selected command in Details panel              |
 | `Ctrl+r`                 | Refresh project list                                                   |
 | `Ctrl+e`                 | Open file editor picker (Projects panel)                               |
 | `Ctrl+l` / `Ctrl+a`      | Toggle local / archived projects (Projects panel)                      |
 | `Ctrl+p/t/b/d`           | Expand/collapse podcasts, timelines, builds, deploys (Analytics panel) |
 | `Ctrl+c`                 | Cancel a running command                                               |
-| `Esc`                    | Close palette / prompt                                                 |
+| `Esc`                    | Close palette / prompt, clear typed args, or quit if nothing to cancel |
 | `Ctrl+q`                 | Quit                                                                   |
 
 ## Project Structure

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use futures_util::StreamExt;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -26,6 +27,13 @@ use crate::core::project::{
     StoredTimeline,
 };
 use crate::core::{compiler, deploy, doctor, scaffold};
+
+const ACCENT: Color = Color::Cyan;
+const WARN: Color = Color::Yellow;
+const ERROR: Color = Color::Red;
+const READY: Color = Color::Green;
+const MUTED: Color = Color::DarkGray;
+const ON_ACCENT: Color = Color::Black;
 
 struct TerminalGuard;
 
@@ -158,6 +166,7 @@ pub struct AppState {
     editor_pick: Option<EditorPick>,
     pending_edit: Option<PathBuf>,
     restore_prompt: Option<String>,
+    pending_confirm: Option<(CommandId, String)>,
 
     rx: mpsc::Receiver<()>,
     tx: mpsc::Sender<()>,
@@ -195,6 +204,7 @@ impl AppState {
             editor_pick: None,
             pending_edit: None,
             restore_prompt: None,
+            pending_confirm: None,
             rx,
             tx,
             task: None,
@@ -421,6 +431,10 @@ impl AppState {
             self.handle_restore_key(key).await;
             return;
         }
+        if self.pending_confirm.is_some() {
+            self.handle_confirm_key(key);
+            return;
+        }
         if self.editor_pick.is_some() {
             self.handle_pick_key(key);
             return;
@@ -505,7 +519,7 @@ impl AppState {
                 Focus::Commands if !self.busy => {
                     let sel = self.cmds_state.selected().unwrap_or(0);
                     if sel > 0 {
-                        self.cmds_state.select(Some(sel - 1));
+                        self.select_command(sel - 1);
                     }
                 }
                 _ => {}
@@ -514,7 +528,7 @@ impl AppState {
                 Focus::Commands if !self.busy => {
                     let sel = self.cmds_state.selected().unwrap_or(0);
                     if sel + 1 < CMDS.len() {
-                        self.cmds_state.select(Some(sel + 1));
+                        self.select_command(sel + 1);
                     }
                 }
                 _ => {}
@@ -547,10 +561,22 @@ impl AppState {
                                 }
                             }
                         }
-                        Focus::Commands => self.start_cmd(),
+                        Focus::Commands => {
+                            let cmd = &CMDS[self.cmds_state.selected().unwrap_or(0)];
+                            if matches!(cmd.id, CommandId::Deploy | CommandId::Rollback)
+                                && self.selected_root().is_some()
+                            {
+                                self.pending_confirm = Some((cmd.id, self.confirm_message(cmd.id)));
+                            } else {
+                                self.start_cmd();
+                            }
+                        }
                         _ => {}
                     }
                 }
+            }
+            KeyCode::Esc if matches!(self.focus, Focus::Commands) && !self.arg_input.is_empty() => {
+                self.arg_input.clear();
             }
             KeyCode::Backspace if !self.busy => {
                 if matches!(self.focus, Focus::Commands)
@@ -624,6 +650,53 @@ impl AppState {
         self.task = Some(handle);
     }
 
+    fn select_command(&mut self, idx: usize) {
+        self.cmds_state.select(Some(idx));
+        self.arg_input.clear();
+    }
+
+    fn confirm_message(&self, id: CommandId) -> String {
+        let target = self
+            .selected_root()
+            .and_then(|r| r.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        match id {
+            CommandId::Deploy => {
+                let mode = if self.arg_input.split_whitespace().any(|w| w == "--staging") {
+                    "local (staging)"
+                } else {
+                    "Supabase"
+                };
+                format!("Deploy '{target}' to {mode}?")
+            }
+            CommandId::Rollback => {
+                let id = self.arg_input.trim();
+                if id.is_empty() {
+                    format!("Rollback '{target}'? (no deployment id set)")
+                } else {
+                    format!("Rollback '{target}' to '{id}'?")
+                }
+            }
+            _ => String::new(),
+        }
+    }
+
+    fn handle_confirm_key(&mut self, key: KeyEvent) {
+        if self.pending_confirm.is_none() {
+            return;
+        }
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                self.pending_confirm = None;
+                self.start_cmd();
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
+                self.pending_confirm = None;
+            }
+            _ => {}
+        }
+    }
+
     fn handle_command_palette_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
@@ -649,11 +722,18 @@ impl AppState {
                     .selected()
                     .and_then(|i| filtered.get(i))
                 {
-                    self.cmds_state.select(Some(cmd_idx));
+                    self.select_command(cmd_idx);
                     self.mode = TuiMode::Runner;
                     self.focus = Focus::Commands;
                     self.command_palette.query.clear();
-                    self.start_cmd();
+                    let cmd = &CMDS[cmd_idx];
+                    if matches!(cmd.id, CommandId::Deploy | CommandId::Rollback)
+                        && self.selected_root().is_some()
+                    {
+                        self.pending_confirm = Some((cmd.id, self.confirm_message(cmd.id)));
+                    } else {
+                        self.start_cmd();
+                    }
                 }
             }
             KeyCode::Backspace => {
@@ -918,7 +998,7 @@ fn sanitize_bib_value(value: &str) -> String {
 
 fn block(title: impl Into<String>, focused: bool) -> Block<'static> {
     let border_style = if focused {
-        Style::new().fg(Color::Cyan)
+        Style::new().fg(ACCENT)
     } else {
         Style::new()
     };
@@ -931,9 +1011,9 @@ fn block(title: impl Into<String>, focused: bool) -> Block<'static> {
 
 fn color_log_line(l: &str) -> Line<'static> {
     if l.contains("ERROR") {
-        Line::styled(l.to_string(), Style::new().fg(Color::Red).bold())
+        Line::styled(l.to_string(), Style::new().fg(ERROR).bold())
     } else if l.contains("WARN") {
-        Line::styled(l.to_string(), Style::new().fg(Color::Yellow))
+        Line::styled(l.to_string(), Style::new().fg(WARN))
     } else {
         Line::from(l.to_string())
     }
@@ -950,30 +1030,7 @@ pub async fn run_tui(
         .map_err(|e| CiteError::Config(format!("{e}")))?;
 
     let mut app = AppState::new(&cli_root).await;
-
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
-    let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-
-    let event_task = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = shutdown_rx.recv() => break,
-                result = tokio::task::spawn_blocking(|| {
-                    if event::poll(std::time::Duration::from_millis(100)).unwrap_or(false) {
-                        event::read().ok()
-                    } else {
-                        None
-                    }
-                }) => {
-                    if let Ok(Some(event)) = result
-                        && event_tx.send(event).is_err()
-                    {
-                        break;
-                    }
-                }
-            }
-        }
-    });
+    let mut events = EventStream::new();
 
     loop {
         terminal
@@ -1003,12 +1060,18 @@ pub async fn run_tui(
                     app.scroll = app.log.len().saturating_sub(1);
                 }
             }
-            Some(event) = event_rx.recv() => {
+            Some(Ok(event)) = events.next() => {
                 if let Event::Key(key) = event
                     && key.kind == KeyEventKind::Press
                 {
-                    let quit = (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL))
-                        || (key.code == KeyCode::Esc && app.mode == TuiMode::Runner && app.editor_pick.is_none());
+                    let quit = (key.code == KeyCode::Char('q')
+                        && key.modifiers.contains(KeyModifiers::CONTROL))
+                        || (key.code == KeyCode::Esc
+                            && app.mode == TuiMode::Runner
+                            && app.restore_prompt.is_none()
+                            && app.pending_confirm.is_none()
+                            && app.editor_pick.is_none()
+                            && !(app.focus == Focus::Commands && !app.arg_input.is_empty()));
 
                     if quit {
                         break;
@@ -1039,8 +1102,6 @@ pub async fn run_tui(
     if let Some(task) = app.task.take() {
         task.abort();
     }
-    let _ = shutdown_tx.send(()).await;
-    let _ = event_task.await;
     Ok(())
 }
 
@@ -1058,6 +1119,8 @@ fn render(frame: &mut Frame, app: &mut AppState) {
 
     if app.restore_prompt.is_some() {
         render_restore_prompt(frame, frame.area(), app);
+    } else if app.pending_confirm.is_some() {
+        render_pending_confirm(frame, frame.area(), app);
     } else if app.editor_pick.is_some() {
         render_editor_pick(frame, frame.area(), app);
     }
@@ -1073,15 +1136,12 @@ fn render_header(frame: &mut Frame, area: Rect, app: &AppState) {
         (
             format!(" Executing: {} on {} ", cmd.label, app.cwd.display()),
             Style::new()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
+                .fg(ON_ACCENT)
+                .bg(WARN)
                 .add_modifier(Modifier::BOLD),
         )
     } else {
-        (
-            " Ready ".to_string(),
-            Style::new().fg(Color::Black).bg(Color::Green),
-        )
+        (" Ready ".to_string(), Style::new().fg(ON_ACCENT).bg(READY))
     };
     let version = Span::styled(
         format!("v{}", env!("CARGO_PKG_VERSION")),
@@ -1133,7 +1193,7 @@ fn render_categorized_project_list(frame: &mut Frame, area: Rect, app: &mut AppS
             let style = match item.kind {
                 ProjectItemKind::LocalHeader | ProjectItemKind::ArchivedHeader => {
                     if is_focused {
-                        Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
                     } else {
                         Style::new().add_modifier(Modifier::BOLD)
                     }
@@ -1150,8 +1210,8 @@ fn render_categorized_project_list(frame: &mut Frame, area: Rect, app: &mut AppS
 
     let list = List::new(items).highlight_style(
         Style::new()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
+            .fg(ON_ACCENT)
+            .bg(ACCENT)
             .add_modifier(Modifier::BOLD),
     );
     frame.render_stateful_widget(list, inner_area, &mut app.projects_state);
@@ -1187,7 +1247,7 @@ fn render_commands_pane(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let tab_block = Block::default()
         .borders(Borders::BOTTOM)
         .border_style(if is_focused {
-            Style::new().fg(Color::Cyan)
+            Style::new().fg(ACCENT)
         } else {
             Style::default()
         });
@@ -1198,7 +1258,7 @@ fn render_commands_pane(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let tabs = Tabs::new(titles)
         .select(app.cmds_state.selected().unwrap_or(0))
         .divider(symbols::DOT)
-        .highlight_style(Style::new().bold().fg(Color::Cyan));
+        .highlight_style(Style::new().bold().fg(ACCENT));
     frame.render_widget(tabs, tab_inner);
 
     let sel = app.cmds_state.selected().unwrap_or(0);
@@ -1217,9 +1277,7 @@ fn render_commands_pane(frame: &mut Frame, area: Rect, app: &mut AppState) {
             app.arg_input.clone()
         };
         let cursor_style = if is_focused {
-            Style::new()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::UNDERLINED)
+            Style::new().fg(WARN).add_modifier(Modifier::UNDERLINED)
         } else {
             Style::new()
         };
@@ -1289,23 +1347,25 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
 
     let help_text = if app.busy {
         "[Ctrl+C] cancel"
+    } else if app.restore_prompt.is_some() || app.pending_confirm.is_some() {
+        "[Y]es  [N]o  [Esc] cancel"
     } else {
         match app.mode {
             TuiMode::CommandPalette => "[type to filter] [↑/↓] [Enter] [Esc]",
             TuiMode::Runner => match app.focus {
-                Focus::Projects => "[↑/↓] [Ctrl+R] [Enter] [Ctrl+E/L/A]",
+                Focus::Projects => "[↑/↓] [Ctrl+R] [Enter] [Ctrl+E/L/A] [Ctrl+Shift+P] palette",
                 Focus::Commands => {
                     let has_args = !CMDS[app.cmds_state.selected().unwrap_or(0)]
                         .args_hint
                         .is_empty();
                     if has_args {
-                        "[←/→] [Enter] [type args]"
+                        "[←/→] [Enter] [type args] [Ctrl+Shift+P] palette"
                     } else {
-                        "[←/→] [Enter]"
+                        "[←/→] [Enter] [Ctrl+Shift+P] palette"
                     }
                 }
-                Focus::Analytics => "[↑/↓] [Ctrl+R] [Enter] [Ctrl+P/T/B/D]",
-                Focus::Logs => "[↑/↓]",
+                Focus::Analytics => "[↑/↓] [Ctrl+R] [Enter] [Ctrl+P/T/B/D] [Ctrl+Shift+P] palette",
+                Focus::Logs => "[↑/↓] [Ctrl+Shift+P] palette",
             },
         }
     };
@@ -1313,7 +1373,7 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
     let [left_area, right_area] =
         Layout::horizontal([Constraint::Length(18), Constraint::Fill(1)]).areas(area);
 
-    let left_style = Style::new().bold().bg(Color::Cyan).fg(Color::Black);
+    let left_style = Style::new().bold().bg(ACCENT).fg(ON_ACCENT);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(mode_label, left_style))),
         left_area,
@@ -1355,7 +1415,7 @@ fn render_command_palette(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let palette_block = Block::default()
         .borders(Borders::ALL)
         .title(" Command Palette ")
-        .border_style(Style::new().fg(Color::Yellow));
+        .border_style(Style::new().fg(WARN));
 
     let inner = palette_block.inner(popup);
     frame.render_widget(palette_block, popup);
@@ -1364,7 +1424,7 @@ fn render_command_palette(frame: &mut Frame, area: Rect, app: &mut AppState) {
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("> ", Style::new().fg(Color::Yellow)),
+            Span::styled("> ", Style::new().fg(WARN)),
             Span::raw(app.command_palette.query.clone()),
         ])),
         input_area,
@@ -1372,11 +1432,8 @@ fn render_command_palette(frame: &mut Frame, area: Rect, app: &mut AppState) {
 
     if filtered.is_empty() {
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                "No matching commands",
-                Style::new().fg(Color::DarkGray),
-            ))
-            .alignment(Alignment::Center),
+            Paragraph::new(Span::styled("No matching commands", Style::new().fg(MUTED)))
+                .alignment(Alignment::Center),
             list_area,
         );
         return;
@@ -1388,10 +1445,7 @@ fn render_command_palette(frame: &mut Frame, area: Rect, app: &mut AppState) {
     frame.render_stateful_widget(list, list_area, &mut app.command_palette.list_state);
 }
 
-fn render_restore_prompt(frame: &mut Frame, area: Rect, app: &AppState) {
-    let Some(ref name) = app.restore_prompt else {
-        return;
-    };
+fn render_confirm_popup(frame: &mut Frame, area: Rect, title: &str, message: &str) {
     let width = 50u16.min(area.width.saturating_sub(2));
     let height = 6u16;
     let [_, mid, _] = Layout::vertical([
@@ -1408,22 +1462,38 @@ fn render_restore_prompt(frame: &mut Frame, area: Rect, app: &AppState) {
     .areas(mid);
 
     let text = Text::from(vec![
-        Line::from(vec![Span::raw(format!(
-            "Restore project \"{}\" Locally?",
-            name
-        ))]),
+        Line::from(message.to_string()),
         Line::from(""),
         Line::from(Span::styled("[Y]es  [N]o", Style::new().bold())),
     ]);
-    let restore_block = Block::default()
+    let confirm_block = Block::default()
         .borders(Borders::ALL)
-        .title(" Restore ")
-        .border_style(Style::new().fg(Color::Yellow));
+        .title(format!(" {title} "))
+        .border_style(Style::new().fg(WARN));
     let p = Paragraph::new(text)
-        .block(restore_block)
+        .block(confirm_block)
         .alignment(Alignment::Center);
     frame.render_widget(Clear, popup);
     frame.render_widget(p, popup);
+}
+
+fn render_restore_prompt(frame: &mut Frame, area: Rect, app: &AppState) {
+    let Some(ref name) = app.restore_prompt else {
+        return;
+    };
+    render_confirm_popup(
+        frame,
+        area,
+        "Restore",
+        &format!("Restore project \"{name}\" locally?"),
+    );
+}
+
+fn render_pending_confirm(frame: &mut Frame, area: Rect, app: &AppState) {
+    let Some((_, ref message)) = app.pending_confirm else {
+        return;
+    };
+    render_confirm_popup(frame, area, "Confirm", message);
 }
 
 fn render_editor_pick(frame: &mut Frame, area: Rect, app: &mut AppState) {
@@ -1454,7 +1524,7 @@ fn render_editor_pick(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let edit_block = Block::default()
         .borders(Borders::ALL)
         .title(" Select File to Edit ")
-        .border_style(Style::new().fg(Color::Yellow));
+        .border_style(Style::new().fg(WARN));
 
     let list = List::new(items)
         .block(edit_block)

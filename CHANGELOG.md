@@ -1,6 +1,12 @@
 # changelog
 
-## Unreleased
+## 0.1.0-alpha.4
+- TUI: switched input handling to crossterm's async event stream, removing the background polling task
+- TUI: deploy and rollback now show a Y/N confirmation before running
+- TUI: fixed Esc quitting the app while a confirmation dialog was open; Esc now closes dialogs and clears in-progress input before quitting
+- CLI: deduplicated per-project output/reporting logic in build, deploy, doctor, and clean
+
+## 0.1.0-alpha.3
 - `timeline` metadata field: a single ordered list mixing one BibTeX citation file (string path) and existing news item ids (integers)
 - Standalone `citation:` field removed - citations are declared inside `timeline`
 - Fixed multi-podcast deploys failing when a category had to be created concurrently (categories are re-fetched after insert conflicts)

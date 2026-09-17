@@ -13,6 +13,33 @@ fn print_json<T: serde::Serialize>(value: &T) {
     }
 }
 
+fn print_group_header(multi: bool, name: &str) {
+    if multi {
+        println!("{}", format!("── {name} ──").green());
+    }
+}
+
+fn report_result(cli: &Cli, result: Result<String, CiteError>, err_prefix: &str) -> bool {
+    match result {
+        Ok(msg) => {
+            if cli.json {
+                print_json(&serde_json::json!({"status": "ok", "message": msg}));
+            } else {
+                eprintln!("{msg}");
+            }
+            false
+        }
+        Err(e) => {
+            if cli.json {
+                print_json(&serde_json::json!({"status": "error", "message": e.to_string()}));
+            } else {
+                warn!("{err_prefix}: {e}");
+            }
+            true
+        }
+    }
+}
+
 #[derive(Clone, Parser)]
 #[command(
     name = "cite-cli",
@@ -120,9 +147,7 @@ impl CliCommand {
                 let multi = projects.len() > 1;
                 let mut has_errors = false;
                 for ctx in &projects {
-                    if multi {
-                        println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
-                    }
+                    print_group_header(multi, &ctx.manifest.project.name);
                     match compiler::compile(&db, ctx, force).await {
                         Ok(outcome) => {
                             if cli.json {
@@ -170,53 +195,19 @@ impl CliCommand {
                 let multi = projects.len() > 1;
                 let mut has_errors = false;
                 for ctx in &projects {
-                    if multi {
-                        println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
-                    }
-                    if staging {
-                        match deploy::deploy_staging(&db, ctx, cli.dry_run).await {
-                            Ok(msg) => {
-                                if cli.json {
-                                    print_json(
-                                        &serde_json::json!({"status": "ok", "message": msg}),
-                                    );
-                                } else {
-                                    eprintln!("{msg}");
-                                }
-                            }
-                            Err(e) => {
-                                if cli.json {
-                                    print_json(
-                                        &serde_json::json!({"status": "error", "message": e.to_string()}),
-                                    );
-                                } else {
-                                    warn!("Staging deploy failed: {e}");
-                                }
-                                has_errors = true;
-                            }
-                        }
+                    print_group_header(multi, &ctx.manifest.project.name);
+                    let result = if staging {
+                        deploy::deploy_staging(&db, ctx, cli.dry_run).await
                     } else {
-                        match deploy::deploy(&db, ctx, cli.dry_run).await {
-                            Ok(msg) => {
-                                if cli.json {
-                                    print_json(
-                                        &serde_json::json!({"status": "ok", "message": msg}),
-                                    );
-                                } else {
-                                    eprintln!("{msg}");
-                                }
-                            }
-                            Err(e) => {
-                                if cli.json {
-                                    print_json(
-                                        &serde_json::json!({"status": "error", "message": e.to_string()}),
-                                    );
-                                } else {
-                                    warn!("Deploy failed: {e}");
-                                }
-                                has_errors = true;
-                            }
-                        }
+                        deploy::deploy(&db, ctx, cli.dry_run).await
+                    };
+                    let err_prefix = if staging {
+                        "Staging deploy failed"
+                    } else {
+                        "Deploy failed"
+                    };
+                    if report_result(cli, result, err_prefix) {
+                        has_errors = true;
                     }
                 }
                 if has_errors {
@@ -247,9 +238,7 @@ impl CliCommand {
                 let mut has_errors = false;
                 let mut has_warnings = false;
                 for ctx in &projects {
-                    if multi {
-                        println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
-                    }
+                    print_group_header(multi, &ctx.manifest.project.name);
                     let outcome = doctor::run(&db, ctx).await?;
                     if cli.json {
                         if let Ok(v) = serde_json::to_value(&outcome) {
@@ -288,9 +277,7 @@ impl CliCommand {
                 };
                 let multi = projects.len() > 1;
                 for ctx in &projects {
-                    if multi {
-                        println!("{}", format!("── {} ──", ctx.manifest.project.name).green());
-                    }
+                    print_group_header(multi, &ctx.manifest.project.name);
                     ctx.clean(&db).await?;
                     if cli.json {
                         print_json(
