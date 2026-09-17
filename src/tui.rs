@@ -408,15 +408,13 @@ impl AppState {
     }
 
     pub async fn handle_key(&mut self, key: KeyEvent) {
-        if (key.code == KeyCode::Char('p') || key.code == KeyCode::Char('P'))
-            && (key.modifiers.contains(KeyModifiers::SUPER)
-                || (key.modifiers.contains(KeyModifiers::CONTROL)
-                    && key.modifiers.contains(KeyModifiers::SHIFT)))
-        {
-            self.mode = match self.mode {
-                TuiMode::CommandPalette => TuiMode::Runner,
-                TuiMode::Runner => TuiMode::CommandPalette,
-            };
+        let ctrl_k = key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'));
+        if ctrl_k {
+            match self.mode {
+                TuiMode::CommandPalette => self.close_palette(),
+                TuiMode::Runner => self.mode = TuiMode::CommandPalette,
+            }
             return;
         }
 
@@ -424,6 +422,11 @@ impl AppState {
             TuiMode::Runner => self.handle_runner_key(key).await,
             TuiMode::CommandPalette => self.handle_command_palette_key(key),
         }
+    }
+
+    fn close_palette(&mut self) {
+        self.mode = TuiMode::Runner;
+        self.command_palette.query.clear();
     }
 
     async fn handle_runner_key(&mut self, key: KeyEvent) {
@@ -587,7 +590,10 @@ impl AppState {
                     self.arg_input.pop();
                 }
             }
-            KeyCode::Char(ch) if !self.busy => {
+            KeyCode::Char(ch)
+                if !self.busy
+                    && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
+            {
                 if matches!(self.focus, Focus::Commands)
                     && !CMDS[self.cmds_state.selected().unwrap_or(0)]
                         .args_hint
@@ -699,10 +705,7 @@ impl AppState {
 
     fn handle_command_palette_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => {
-                self.mode = TuiMode::Runner;
-                self.command_palette.query.clear();
-            }
+            KeyCode::Esc => self.close_palette(),
             KeyCode::Up => {
                 self.command_palette.list_state.select_previous();
                 self.clamp_palette_selection();
@@ -723,9 +726,8 @@ impl AppState {
                     .and_then(|i| filtered.get(i))
                 {
                     self.select_command(cmd_idx);
-                    self.mode = TuiMode::Runner;
+                    self.close_palette();
                     self.focus = Focus::Commands;
-                    self.command_palette.query.clear();
                     let cmd = &CMDS[cmd_idx];
                     if matches!(cmd.id, CommandId::Deploy | CommandId::Rollback)
                         && self.selected_root().is_some()
@@ -740,7 +742,9 @@ impl AppState {
                 self.command_palette.query.pop();
                 self.clamp_palette_selection();
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(c)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
                 self.command_palette.query.push(c);
                 self.clamp_palette_selection();
             }
@@ -1064,8 +1068,11 @@ pub async fn run_tui(
                 if let Event::Key(key) = event
                     && key.kind == KeyEventKind::Press
                 {
+                    let ctrl_c = key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL);
                     let quit = (key.code == KeyCode::Char('q')
                         && key.modifiers.contains(KeyModifiers::CONTROL))
+                        || (ctrl_c && !app.busy)
                         || (key.code == KeyCode::Esc
                             && app.mode == TuiMode::Runner
                             && app.restore_prompt.is_none()
@@ -1075,10 +1082,7 @@ pub async fn run_tui(
 
                     if quit {
                         break;
-                    } else if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                        && app.busy
-                    {
+                    } else if ctrl_c && app.busy {
                         if let Some(task) = app.task.take() {
                             task.abort();
                         }
@@ -1346,26 +1350,26 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &AppState) {
     };
 
     let help_text = if app.busy {
-        "[Ctrl+C] cancel"
+        "[Ctrl+C] cancel  [Ctrl+Q]"
     } else if app.restore_prompt.is_some() || app.pending_confirm.is_some() {
-        "[Y]es  [N]o  [Esc] cancel"
+        "[Y]es  [N]o  [Esc] cancel  [Ctrl+Q]"
     } else {
         match app.mode {
-            TuiMode::CommandPalette => "[type to filter] [↑/↓] [Enter] [Esc]",
+            TuiMode::CommandPalette => "[type to filter] [↑/↓] [Enter] [Esc] [Ctrl+Q]",
             TuiMode::Runner => match app.focus {
-                Focus::Projects => "[↑/↓] [Ctrl+R] [Enter] [Ctrl+E/L/A] [Ctrl+Shift+P] palette",
+                Focus::Projects => "[↑/↓] [Ctrl+R] [Enter] [Ctrl+E/L/A] [Ctrl+K] [Ctrl+Q]",
                 Focus::Commands => {
                     let has_args = !CMDS[app.cmds_state.selected().unwrap_or(0)]
                         .args_hint
                         .is_empty();
                     if has_args {
-                        "[←/→] [Enter] [type args] [Ctrl+Shift+P] palette"
+                        "[←/→] [Enter] [type args] [Ctrl+K] [Ctrl+Q]"
                     } else {
-                        "[←/→] [Enter] [Ctrl+Shift+P] palette"
+                        "[←/→] [Enter] [Ctrl+K] [Ctrl+Q]"
                     }
                 }
-                Focus::Analytics => "[↑/↓] [Ctrl+R] [Enter] [Ctrl+P/T/B/D] [Ctrl+Shift+P] palette",
-                Focus::Logs => "[↑/↓] [Ctrl+Shift+P] palette",
+                Focus::Analytics => "[↑/↓] [Ctrl+R] [Enter] [Ctrl+P/T/B/D] [Ctrl+K] [Ctrl+Q]",
+                Focus::Logs => "[↑/↓] [Ctrl+K] [Ctrl+Q]",
             },
         }
     };
@@ -1408,7 +1412,7 @@ fn render_command_palette(frame: &mut Frame, area: Rect, app: &mut AppState) {
         .iter()
         .map(|&cmd_idx| {
             let cmd = &CMDS[cmd_idx];
-            ListItem::new(format!("{}: {}", cmd.label, cmd.desc))
+            ListItem::new(format!(" {}: {}", cmd.label, cmd.desc))
         })
         .collect();
 
@@ -1423,10 +1427,9 @@ fn render_command_palette(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let [input_area, list_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("> ", Style::new().fg(WARN)),
-            Span::raw(app.command_palette.query.clone()),
-        ])),
+        Paragraph::new(Line::from(vec![Span::raw(
+            app.command_palette.query.clone(),
+        )])),
         input_area,
     );
 
